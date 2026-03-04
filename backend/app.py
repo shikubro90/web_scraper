@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, session, redirect, url_for
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
@@ -10,18 +10,78 @@ import validators
 import io
 import re
 import csv
+import sqlite3
+import os
 from urllib.parse import urljoin, urlparse
 import uuid
 import ssl
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import wraps
 
 # Suppress SSL warnings
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'vulnscan-secret-2024')
 CORS(app)
+
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'VulnScan@2024')
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vulnscan.db')
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS scan_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT, timestamp TEXT,
+        risk_score INTEGER, seo_score INTEGER,
+        vuln_total INTEGER, vuln_critical INTEGER,
+        vuln_high INTEGER, vuln_medium INTEGER, vuln_low INTEGER
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS export_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT, timestamp TEXT, export_type TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def log_scan(data):
+    try:
+        v = data.get('vulnerabilities', {}).get('summary', {})
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute('''INSERT INTO scan_history
+            (url, timestamp, risk_score, seo_score, vuln_total, vuln_critical, vuln_high, vuln_medium, vuln_low)
+            VALUES (?,?,?,?,?,?,?,?,?)''',
+            (data.get('url'), datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+             v.get('risk_score', 0), data.get('seo', {}).get('score', 0),
+             v.get('total', 0), v.get('critical', 0),
+             v.get('high', 0), v.get('medium', 0), v.get('low', 0)))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+def log_export(url, export_type):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute('INSERT INTO export_history (url, timestamp, export_type) VALUES (?,?,?)',
+                     (url, datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'), export_type))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('admin'):
+            return redirect('/admin/login')
+        return f(*args, **kwargs)
+    return decorated
 
 # Store scraped data temporarily
 scraped_data_store = {}
@@ -212,7 +272,7 @@ def check_ssl_vulnerabilities(url):
                     expiry = cert['notAfter']
                     # Parse the date
                     expiry_date = datetime.strptime(expiry, '%b %d %H:%M:%S %Y %Z')
-                    days_until_expiry = (expiry_date - datetime.utcnow()).days
+                    days_until_expiry = (expiry_date - datetime.now(timezone.utc)).days
 
                     if days_until_expiry < 0:
                         ssl_issues.append({
@@ -613,6 +673,7 @@ def scrape():
         # Store with unique ID
         session_id = str(uuid.uuid4())
         scraped_data_store[session_id] = scraped_data
+        log_scan(scraped_data)
 
         return jsonify({
             'success': True,
@@ -720,6 +781,7 @@ def export_csv(session_id):
         mem.write(output.getvalue().encode('utf-8'))
         mem.seek(0)
 
+        log_export(data.get('url'), 'csv')
         return send_file(
             mem,
             mimetype='text/csv',
@@ -902,6 +964,7 @@ def export_doc(session_id):
         doc.save(mem)
         mem.seek(0)
 
+        log_export(data.get('url'), 'doc')
         return send_file(
             mem,
             mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -1048,6 +1111,206 @@ def clear_session(session_id):
     if session_id in scraped_data_store:
         del scraped_data_store[session_id]
     return jsonify({'success': True})
+
+
+# ── Admin Panel ────────────────────────────────────────────────────────────────
+
+ADMIN_HTML = '''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>VulnScan Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.topbar{background:#1e293b;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155}
+.topbar h1{font-size:18px;color:#38bdf8}
+.logout{color:#94a3b8;text-decoration:none;font-size:13px}
+.logout:hover{color:#f87171}
+.container{padding:24px;max-width:1200px;margin:0 auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:28px}
+.card{background:#1e293b;border-radius:10px;padding:18px;border:1px solid #334155}
+.card .label{font-size:12px;color:#64748b;margin-bottom:6px}
+.card .value{font-size:28px;font-weight:700;color:#38bdf8}
+.card .sub{font-size:12px;color:#94a3b8;margin-top:4px}
+.section{background:#1e293b;border-radius:10px;border:1px solid #334155;margin-bottom:24px;overflow:hidden}
+.section-title{padding:14px 18px;font-size:14px;font-weight:600;border-bottom:1px solid #334155;color:#94a3b8;display:flex;justify-content:space-between}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#0f172a;padding:10px 14px;text-align:left;color:#64748b;font-weight:500}
+td{padding:10px 14px;border-top:1px solid #1e293b}
+tr:hover td{background:#1e3a5f22}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.badge.high{background:#7f1d1d;color:#fca5a5}
+.badge.med{background:#78350f;color:#fcd34d}
+.badge.low{background:#14532d;color:#86efac}
+.badge.csv{background:#1e3a5f;color:#7dd3fc}
+.badge.doc{background:#312e81;color:#a5b4fc}
+
+/* Login */
+.login-wrap{display:flex;align-items:center;justify-content:center;height:100vh}
+.login-box{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:36px;width:320px}
+.login-box h2{color:#38bdf8;margin-bottom:24px;text-align:center}
+input[type=password]{width:100%;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:10px 14px;color:#e2e8f0;font-size:14px;margin-bottom:14px}
+input[type=password]:focus{outline:none;border-color:#38bdf8}
+.btn{width:100%;background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:10px;font-size:14px;font-weight:600;cursor:pointer}
+.btn:hover{background:#0284c7}
+.err{color:#f87171;font-size:13px;margin-top:10px;text-align:center}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const S=document.getElementById('app');
+const path=location.pathname;
+
+async function api(url,opts={}){
+  const r=await fetch(url,{credentials:'include',...opts});
+  return r.json();
+}
+
+function renderLogin(){
+  S.innerHTML=`<div class="login-wrap"><div class="login-box">
+    <h2>🔍 VulnScan Admin</h2>
+    <input type="password" id="pw" placeholder="Password" onkeydown="if(event.key==='Enter')login()">
+    <button class="btn" onclick="login()">Login</button>
+    <div class="err" id="err"></div>
+  </div></div>`;
+}
+
+async function login(){
+  const pw=document.getElementById('pw').value;
+  const r=await api('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+  if(r.ok) renderDashboard();
+  else document.getElementById('err').textContent='Wrong password';
+}
+
+async function renderDashboard(){
+  const [stats,scans,exports]=await Promise.all([
+    api('/admin/api/stats'),
+    api('/admin/api/scans'),
+    api('/admin/api/exports')
+  ]);
+
+  const riskColor=s=>s>=70?'high':s>=40?'med':'low';
+
+  S.innerHTML=`
+  <div class="topbar"><h1>🔍 VulnScan Admin</h1><a class="logout" href="/admin/logout">Logout</a></div>
+  <div class="container">
+    <div class="cards">
+      <div class="card"><div class="label">Total Scans</div><div class="value">${stats.total_scans}</div></div>
+      <div class="card"><div class="label">Today</div><div class="value">${stats.today_scans}</div><div class="sub">scans</div></div>
+      <div class="card"><div class="label">This Month</div><div class="value">${stats.month_scans}</div><div class="sub">scans</div></div>
+      <div class="card"><div class="label">Avg Risk Score</div><div class="value">${stats.avg_risk}</div><div class="sub">/ 100</div></div>
+      <div class="card"><div class="label">Avg SEO Score</div><div class="value">${stats.avg_seo}</div><div class="sub">/ 100</div></div>
+      <div class="card"><div class="label">Total Exports</div><div class="value">${stats.total_exports}</div></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Scan History</span><span>${scans.length} records</span></div>
+      <table>
+        <tr><th>URL</th><th>Date</th><th>Risk</th><th>SEO</th><th>Vulns</th><th>Critical</th><th>High</th></tr>
+        ${scans.map(s=>`<tr>
+          <td>${s.url}</td>
+          <td>${s.timestamp}</td>
+          <td><span class="badge ${riskColor(s.risk_score)}">${s.risk_score}</span></td>
+          <td>${s.seo_score}</td>
+          <td>${s.vuln_total}</td>
+          <td>${s.vuln_critical}</td>
+          <td>${s.vuln_high}</td>
+        </tr>`).join('')}
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Export History</span><span>${exports.length} records</span></div>
+      <table>
+        <tr><th>URL</th><th>Date</th><th>Type</th></tr>
+        ${exports.map(e=>`<tr>
+          <td>${e.url}</td>
+          <td>${e.timestamp}</td>
+          <td><span class="badge ${e.export_type}">${e.export_type.toUpperCase()}</span></td>
+        </tr>`).join('')}
+      </table>
+    </div>
+  </div>`;
+}
+
+async function init(){
+  const r=await api('/admin/api/check');
+  if(r.ok) renderDashboard();
+  else renderLogin();
+}
+init();
+</script>
+</body>
+</html>'''
+
+
+@app.route('/admin')
+@app.route('/admin/')
+@admin_required
+def admin_index():
+    return ADMIN_HTML
+
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'GET':
+        return ADMIN_HTML
+    data = request.get_json()
+    if data and data.get('password') == ADMIN_PASSWORD:
+        session['admin'] = True
+        return jsonify({'ok': True})
+    return jsonify({'ok': False}), 401
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.clear()
+    return redirect('/admin/login')
+
+
+@app.route('/admin/api/check')
+def admin_check():
+    return jsonify({'ok': bool(session.get('admin'))})
+
+
+@app.route('/admin/api/stats')
+@admin_required
+def admin_stats():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    month = datetime.now(timezone.utc).strftime('%Y-%m')
+    stats = {
+        'total_scans':   c.execute('SELECT COUNT(*) FROM scan_history').fetchone()[0],
+        'today_scans':   c.execute("SELECT COUNT(*) FROM scan_history WHERE timestamp LIKE ?", (today+'%',)).fetchone()[0],
+        'month_scans':   c.execute("SELECT COUNT(*) FROM scan_history WHERE timestamp LIKE ?", (month+'%',)).fetchone()[0],
+        'avg_risk':      round(c.execute('SELECT AVG(risk_score) FROM scan_history').fetchone()[0] or 0),
+        'avg_seo':       round(c.execute('SELECT AVG(seo_score) FROM scan_history').fetchone()[0] or 0),
+        'total_exports': c.execute('SELECT COUNT(*) FROM export_history').fetchone()[0],
+    }
+    conn.close()
+    return jsonify(stats)
+
+
+@app.route('/admin/api/scans')
+@admin_required
+def admin_scans():
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute('SELECT url,timestamp,risk_score,seo_score,vuln_total,vuln_critical,vuln_high,vuln_medium,vuln_low FROM scan_history ORDER BY id DESC LIMIT 100').fetchall()
+    conn.close()
+    keys = ['url','timestamp','risk_score','seo_score','vuln_total','vuln_critical','vuln_high','vuln_medium','vuln_low']
+    return jsonify([dict(zip(keys, r)) for r in rows])
+
+
+@app.route('/admin/api/exports')
+@admin_required
+def admin_exports():
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute('SELECT url,timestamp,export_type FROM export_history ORDER BY id DESC LIMIT 100').fetchall()
+    conn.close()
+    return jsonify([{'url': r[0], 'timestamp': r[1], 'export_type': r[2]} for r in rows])
 
 
 if __name__ == '__main__':
