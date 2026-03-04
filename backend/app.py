@@ -600,6 +600,10 @@ def scrape():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
 
+        # Auto-prepend https:// if no protocol given
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
         if not is_valid_url(url):
             return jsonify({'error': 'Invalid URL format. Please provide a valid URL (e.g., https://example.com)'}), 400
 

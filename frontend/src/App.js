@@ -5,7 +5,7 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
 
-const API_URL = 'http://localhost:5001';
+const API_URL = process.env.REACT_APP_API_URL || '';
 
 function App() {
   const [url, setUrl] = useState('');
@@ -37,8 +37,11 @@ function App() {
     setSessionId(null);
     setImagesToShow(10);
 
+    // Auto-prepend https:// if no protocol given
+    const normalizedUrl = url.match(/^https?:\/\//i) ? url : `https://${url}`;
+
     try {
-      const response = await axios.post(`${API_URL}/api/scrape`, { url });
+      const response = await axios.post(`${API_URL}/api/scrape`, { url: normalizedUrl });
 
       if (response.data.success) {
         setData(response.data.data);
