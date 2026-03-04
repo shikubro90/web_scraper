@@ -46,10 +46,10 @@ function App() {
       if (response.data.success) {
         setData(response.data.data);
         setSessionId(response.data.session_id);
-        toast.success('Website scraped successfully!');
+        toast.success('Website scanned successfully!');
       }
     } catch (error) {
-      const errorMessage = error.response?.data?.error || 'Failed to scrape website';
+      const errorMessage = error.response?.data?.error || 'Failed to scan website';
       toast.error(errorMessage);
     } finally {
       setLoading(false);
@@ -552,10 +552,10 @@ function App() {
                 {loading ? (
                   <>
                     <ClipLoader size={16} color="#fff" />
-                    Scraping...
+                    Scanning...
                   </>
                 ) : (
-                  'Scrape Website'
+                  'Scan Website'
                 )}
               </button>
             </div>
@@ -565,7 +565,7 @@ function App() {
         {data && (
           <section className="results-section">
             <div className="results-header">
-              <h2>Scraped Data</h2>
+              <h2>Scanned Data</h2>
               <div className="export-buttons">
                 <button onClick={handleExportCSV} className="export-btn csv-btn">Export CSV</button>
                 <button onClick={handleExportDOC} className="export-btn doc-btn">Export DOC</button>
