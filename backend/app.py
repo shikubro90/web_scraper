@@ -221,12 +221,88 @@ def check_sensitive_files(base_url):
 
     exposed_files = []
 
+    # Detect SPA (Single Page Application) behavior: SPAs return 200 for all routes
+    # by serving the index.html. We probe a random non-existent path as a baseline.
+    spa_baseline_content = None
+    spa_baseline_length = None
+    try:
+        canary_url = urljoin(base_url, '/definitely-not-a-real-path-xk392q')
+        canary_resp = requests.get(canary_url, timeout=5, verify=False, allow_redirects=False)
+        if canary_resp.status_code == 200:
+            spa_baseline_content = canary_resp.text
+            spa_baseline_length = len(canary_resp.content)
+    except:
+        pass
+
+    def is_spa_false_positive(response):
+        """Return True if the response looks like an SPA catch-all, not a real file."""
+        if spa_baseline_content is None:
+            return False
+        content_type = response.headers.get('Content-Type', '')
+        # If the response is HTML, compare with the SPA baseline
+        if 'text/html' in content_type:
+            resp_len = len(response.content)
+            # If the length is within 5% of the baseline, treat as SPA catch-all
+            if spa_baseline_length and abs(resp_len - spa_baseline_length) / max(spa_baseline_length, 1) < 0.05:
+                return True
+            # If the body text is identical to the baseline, it's definitely a catch-all
+            if response.text == spa_baseline_content:
+                return True
+        return False
+
+    def is_real_file_content(file_path, response):
+        """Validate that the response content makes sense for the given file type."""
+        content_type = response.headers.get('Content-Type', '')
+        body = response.text[:2000]
+
+        if file_path.endswith('.php'):
+            # PHP files that are truly exposed should NOT return generic HTML
+            # A real PHP file would contain PHP output or error traces, not an SPA shell
+            if '<div id="root">' in body or '<div id="app">' in body:
+                return False
+            # phpinfo returns a very specific pattern
+            if file_path == '/phpinfo.php' and 'PHP Version' not in body:
+                return False
+            # wp-config.php and config.php are raw PHP — a server misconfiguration
+            # would either show PHP source or execute it. An HTML SPA page means
+            # the route was caught by the frontend router.
+            if 'text/html' in content_type and '<?php' not in body and 'PHP' not in body:
+                return False
+
+        if file_path == '/.env':
+            # A real .env file should look like KEY=VALUE pairs, not HTML
+            if '<html' in body.lower() or '<body' in body.lower():
+                return False
+
+        if file_path == '/.git/config':
+            # git config files contain [core] sections
+            if '[core]' not in body and '[remote' not in body:
+                return False
+
+        if file_path == '/.htaccess':
+            # htaccess files contain Apache directives
+            if '<html' in body.lower():
+                return False
+
+        if file_path == '/.htpasswd':
+            # htpasswd files contain user:hash lines, not HTML
+            if '<html' in body.lower():
+                return False
+
+        return True
+
     for file_info in sensitive_files:
         file_path = file_info['path']
         try:
             test_url = urljoin(base_url, file_path)
             response = requests.get(test_url, timeout=5, verify=False, allow_redirects=False)
             if response.status_code == 200:
+                # Skip if this looks like an SPA catch-all response
+                if is_spa_false_positive(response):
+                    continue
+                # Skip if content doesn't match what the file type should contain
+                if not is_real_file_content(file_path, response):
+                    continue
                 exposed_files.append({
                     'type': 'Exposed Sensitive File',
                     'severity': 'High' if file_path in ['/.env', '/.git/config', '/config.php', '/wp-config.php'] else 'Medium',
