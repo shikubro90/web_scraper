@@ -1176,3 +1176,99 @@
   margin: 0;
 }
 .tech-purpose.na { color: #555577; font-style: italic; }
+
+/* ── Block Screen ── */
+.block-screen {
+  max-width: 520px;
+  margin: 60px auto;
+  background: #1a1a2e;
+  border: 1px solid #ff4444;
+  border-radius: 16px;
+  padding: 40px 32px;
+  text-align: center;
+}
+
+.block-icon { font-size: 3rem; margin-bottom: 12px; }
+
+.block-title {
+  color: #ff6b6b;
+  font-size: 1.6rem;
+  margin: 0 0 8px 0;
+}
+
+.block-reason {
+  color: #e0e0ff;
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.block-tip {
+  color: #8888aa;
+  font-size: 0.85rem;
+  margin: 0 0 28px 0;
+  line-height: 1.5;
+}
+
+.block-countdown {
+  background: #0d0d1a;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.block-timer {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #ff6b6b;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 4px;
+}
+
+.block-timer-label {
+  color: #8888aa;
+  font-size: 0.78rem;
+  margin: 4px 0 14px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.block-progress-bar {
+  height: 6px;
+  background: #2a2a4a;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.block-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ff4444, #ff8888);
+  border-radius: 3px;
+  transition: width 1s linear;
+}
+
+.block-rules {
+  text-align: left;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.block-rules h4 {
+  color: #8888aa;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 10px 0;
+}
+
+.block-rule-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 0.83rem;
+  border-bottom: 1px solid #1a1a3a;
+  color: #c0c0e0;
+}
+.block-rule-row:last-child { border-bottom: none; }
+.block-rule-row span:first-child { color: #8888aa; }

@@ -16,10 +16,25 @@ function App() {
   const [vulnFilter, setVulnFilter] = useState('All');
   const [imagesToShow, setImagesToShow] = useState(10);
   const [showExportOptions, setShowExportOptions] = useState(false);
+  const [blockInfo, setBlockInfo] = useState(null);
+  const [countdown, setCountdown] = useState(0);
   const [exportSections, setExportSections] = useState({
     overview: true, vulnerabilities: true, tech: true, seo: true, headings: true,
     paragraphs: true, links: true, images: true, tables: true, lists: true, fulltext: true,
   });
+
+  // Countdown timer for block screen
+  React.useEffect(() => {
+    if (!blockInfo) return;
+    setCountdown(blockInfo.remaining_seconds);
+    const interval = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) { clearInterval(interval); setBlockInfo(null); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [blockInfo]);
 
   const getSelectedSections = () =>
     Object.entries(exportSections).filter(([, v]) => v).map(([k]) => k).join(',');
@@ -46,11 +61,17 @@ function App() {
       if (response.data.success) {
         setData(response.data.data);
         setSessionId(response.data.session_id);
+        // Show approaching-limit warnings
+        (response.data.warnings || []).forEach(w => toast.warn(w, { autoClose: 6000 }));
         toast.success('Website scanned successfully!');
       }
     } catch (error) {
-      const errorMessage = error.response?.data?.error || 'Failed to scan website';
-      toast.error(errorMessage);
+      const errData = error.response?.data;
+      if (errData?.error === 'blocked' && errData?.block) {
+        setBlockInfo(errData.block);
+      } else {
+        toast.error(errData?.error || 'Failed to scan website');
+      }
     } finally {
       setLoading(false);
     }
@@ -657,6 +678,48 @@ function App() {
         return null;
     }
   };
+
+  const RULE_DETAILS = {
+    burst:  { icon: '⚡', title: 'Too Many Scans Too Fast', tip: 'You hit the burst limit of 5 scans per 60 seconds. This protects the server from rapid automated abuse.' },
+    hourly: { icon: '⏱', title: 'Hourly Limit Reached',    tip: 'You reached the maximum of 10 scans per hour. This ensures fair usage for everyone.' },
+    domain: { icon: '🔁', title: 'Same Domain Over-scanned', tip: 'You scanned the same domain more than 10 times in an hour. Repeated scanning of one target is flagged as potential abuse.' },
+  };
+
+  if (blockInfo) {
+    const mins = Math.floor(countdown / 60);
+    const secs = countdown % 60;
+    const pct = Math.round((countdown / blockInfo.remaining_seconds) * 100);
+    const detail = RULE_DETAILS[blockInfo.rule] || { icon: '🚫', title: 'Access Suspended', tip: blockInfo.reason };
+    return (
+      <div className="App">
+        <header className="app-header">
+          <h1>VulnScan</h1>
+          <p>Scan websites for security vulnerabilities and assess potential risks</p>
+        </header>
+        <main className="main-content">
+          <div className="block-screen">
+            <div className="block-icon">{detail.icon}</div>
+            <h2 className="block-title">Temporarily Blocked</h2>
+            <p className="block-reason">{detail.title}</p>
+            <p className="block-tip">{detail.tip}</p>
+            <div className="block-countdown">
+              <div className="block-timer">{String(mins).padStart(2,'0')}:{String(secs).padStart(2,'0')}</div>
+              <p className="block-timer-label">Time remaining</p>
+              <div className="block-progress-bar">
+                <div className="block-progress-fill" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+            <div className="block-rules">
+              <h4>Usage Limits</h4>
+              <div className="block-rule-row"><span>Burst</span><span>5 scans per 60 seconds</span></div>
+              <div className="block-rule-row"><span>Hourly</span><span>10 scans per hour</span></div>
+              <div className="block-rule-row"><span>Same Domain</span><span>10 times per hour</span></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="App">

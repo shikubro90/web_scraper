@@ -30,6 +30,17 @@ CORS(app)
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'VulnScan@2024')
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vulnscan.db')
 
+RATE_LIMITS = {
+    'burst':      {'max': 5,  'window': 60,   'block': 1200},   # 5 scans / 60 sec
+    'hourly':     {'max': 10, 'window': 3600,  'block': 1200},   # 10 scans / hour
+    'domain':     {'max': 10, 'window': 3600,  'block': 1200},   # 10 scans same domain / hour
+}
+WARN_AT = 0.7   # warn when 70% of any limit is hit
+
+PRIVATE_NETS = re.compile(
+    r'^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.|localhost)', re.I
+)
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -44,10 +55,131 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         url TEXT, timestamp TEXT, export_type TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS rate_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        ts INTEGER NOT NULL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS blocks (
+        ip TEXT PRIMARY KEY,
+        reason TEXT,
+        rule TEXT,
+        blocked_at INTEGER,
+        unblock_at INTEGER
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_rate_ip_ts ON rate_events(ip, ts)')
     conn.commit()
     conn.close()
 
 init_db()
+
+
+def get_client_ip():
+    """Get real client IP, respecting reverse proxy headers."""
+    for header in ('X-Forwarded-For', 'X-Real-IP'):
+        val = request.headers.get(header)
+        if val:
+            return val.split(',')[0].strip()
+    return request.remote_addr or '0.0.0.0'
+
+
+def check_rate_limit(ip, domain):
+    """
+    Returns (blocked, block_info, warnings).
+    blocked: bool
+    block_info: dict with reason/rule/unblock_at if blocked
+    warnings: list of warning strings
+    """
+    now = int(datetime.now(timezone.utc).timestamp())
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Check existing block
+    row = c.execute('SELECT reason, rule, unblock_at FROM blocks WHERE ip=?', (ip,)).fetchone()
+    if row:
+        reason, rule, unblock_at = row
+        if now < unblock_at:
+            conn.close()
+            remaining = unblock_at - now
+            mins = remaining // 60
+            secs = remaining % 60
+            return True, {
+                'reason': reason,
+                'rule': rule,
+                'unblock_at': unblock_at,
+                'remaining_seconds': remaining,
+                'message': f'Access temporarily suspended for {mins}m {secs}s. {reason}'
+            }, []
+        else:
+            # Block expired — remove it
+            c.execute('DELETE FROM blocks WHERE ip=?', (ip,))
+            conn.commit()
+
+    # Count events in windows
+    burst_since  = now - RATE_LIMITS['burst']['window']
+    hourly_since = now - RATE_LIMITS['hourly']['window']
+
+    burst_count  = c.execute('SELECT COUNT(*) FROM rate_events WHERE ip=? AND ts>=?',
+                             (ip, burst_since)).fetchone()[0]
+    hourly_count = c.execute('SELECT COUNT(*) FROM rate_events WHERE ip=? AND ts>=?',
+                             (ip, hourly_since)).fetchone()[0]
+    domain_count = c.execute('SELECT COUNT(*) FROM rate_events WHERE ip=? AND domain=? AND ts>=?',
+                             (ip, domain, hourly_since)).fetchone()[0]
+
+    counts = {
+        'burst':  (burst_count,  RATE_LIMITS['burst']['max']),
+        'hourly': (hourly_count, RATE_LIMITS['hourly']['max']),
+        'domain': (domain_count, RATE_LIMITS['domain']['max']),
+    }
+
+    RULE_LABELS = {
+        'burst':  'Too many scans in a short time (max 5 per 60 seconds)',
+        'hourly': 'Hourly scan limit reached (max 10 per hour)',
+        'domain': 'Same domain scanned too many times (max 10 per hour)',
+    }
+
+    # Check if any limit exceeded
+    for rule, (count, limit) in counts.items():
+        if count >= limit:
+            unblock_at = now + RATE_LIMITS[rule]['block']
+            label = RULE_LABELS[rule]
+            c.execute('''INSERT OR REPLACE INTO blocks (ip, reason, rule, blocked_at, unblock_at)
+                         VALUES (?,?,?,?,?)''', (ip, label, rule, now, unblock_at))
+            conn.commit()
+            conn.close()
+            mins = RATE_LIMITS[rule]['block'] // 60
+            return True, {
+                'reason': label,
+                'rule': rule,
+                'unblock_at': unblock_at,
+                'remaining_seconds': RATE_LIMITS[rule]['block'],
+                'message': f'Temporarily blocked for {mins} minutes. Reason: {label}'
+            }, []
+
+    # Build warnings (approaching limits)
+    warnings = []
+    WARN_MSGS = {
+        'burst':  lambda c, m: f'Slow down — {c} of {m} allowed scans used in the last 60 seconds.',
+        'hourly': lambda c, m: f'Approaching hourly limit — {c}/{m} scans used this hour.',
+        'domain': lambda c, m: f'Same domain scanned {c}/{m} times this hour.',
+    }
+    for rule, (count, limit) in counts.items():
+        if count >= int(limit * WARN_AT):
+            warnings.append(WARN_MSGS[rule](count, limit))
+
+    conn.close()
+    return False, None, warnings
+
+
+def record_scan_event(ip, domain):
+    now = int(datetime.now(timezone.utc).timestamp())
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('INSERT INTO rate_events (ip, domain, ts) VALUES (?,?,?)', (ip, domain, now))
+    # Prune old events (older than 1 hour) to keep table small
+    conn.execute('DELETE FROM rate_events WHERE ts < ?', (now - 3600,))
+    conn.commit()
+    conn.close()
 
 def log_scan(data):
     try:
@@ -1028,6 +1160,29 @@ def scrape():
         if not is_valid_url(url):
             return jsonify({'error': 'Invalid URL format. Please provide a valid URL (e.g., https://example.com)'}), 400
 
+        # Block private/internal IP scanning
+        parsed_host = urlparse(url).hostname or ''
+        try:
+            resolved_ip = socket.gethostbyname(parsed_host)
+            if PRIVATE_NETS.match(resolved_ip) or PRIVATE_NETS.match(parsed_host):
+                return jsonify({'error': 'Scanning private or internal network addresses is not permitted.'}), 403
+        except Exception:
+            pass
+
+        # Rate limiting
+        client_ip = get_client_ip()
+        domain = parsed_host.lower()
+        blocked, block_info, warnings = check_rate_limit(client_ip, domain)
+
+        if blocked:
+            return jsonify({
+                'error': 'blocked',
+                'block': block_info,
+            }), 429
+
+        # Record this scan attempt before running (counts against limit)
+        record_scan_event(client_ip, domain)
+
         # Scrape the website
         scraped_data = scrape_website(url)
 
@@ -1039,7 +1194,8 @@ def scrape():
         return jsonify({
             'success': True,
             'session_id': session_id,
-            'data': scraped_data
+            'data': scraped_data,
+            'warnings': warnings,
         })
 
     except Exception as e:
