@@ -17,7 +17,7 @@ function App() {
   const [imagesToShow, setImagesToShow] = useState(10);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [exportSections, setExportSections] = useState({
-    overview: true, vulnerabilities: true, seo: true, headings: true,
+    overview: true, vulnerabilities: true, tech: true, seo: true, headings: true,
     paragraphs: true, links: true, images: true, tables: true, lists: true, fulltext: true,
   });
 
@@ -215,6 +215,141 @@ function App() {
             )}
           </div>
         );
+
+      case 'tech': {
+        const t = data.tech;
+        if (!t) return <div className="tab-content"><p className="no-data">No tech data available</p></div>;
+        const NA_TEXT = 'Not publicly disclosed';
+        const TechRow = ({ label, value }) => (
+          <div className="tech-row">
+            <span className="tech-label">{label}</span>
+            <span className={`tech-value ${(!value || value === NA_TEXT) ? 'na' : ''}`}>
+              {value || NA_TEXT}
+            </span>
+          </div>
+        );
+        const TagList = ({ items }) => items && items.length > 0
+          ? <div className="tech-tags">{items.map((item, i) => <span key={i} className="tech-tag">{item}</span>)}</div>
+          : <span className="tech-value na">{NA_TEXT}</span>;
+
+        return (
+          <div className="tab-content">
+            <h3>Website Intelligence Report</h3>
+
+            <div className="tech-grid">
+              <div className="tech-card">
+                <h4>Technology Stack</h4>
+                <div className="tech-rows">
+                  <div className="tech-row"><span className="tech-label">Frontend Framework</span><TagList items={t.frontend} /></div>
+                  <div className="tech-row"><span className="tech-label">Backend / Server</span><TagList items={t.backend} /></div>
+                  <TechRow label="CMS" value={t.cms} />
+                  <TechRow label="CDN Provider" value={t.cdn} />
+                  <div className="tech-row"><span className="tech-label">JS Libraries</span><TagList items={t.libraries} /></div>
+                  <div className="tech-row"><span className="tech-label">Analytics Tools</span><TagList items={t.analytics} /></div>
+                </div>
+              </div>
+
+              <div className="tech-card">
+                <h4>Hosting & Network</h4>
+                <div className="tech-rows">
+                  <TechRow label="IP Address" value={t.ip} />
+                  <TechRow label="Country" value={t.country} />
+                  <TechRow label="City" value={t.city} />
+                  <TechRow label="ISP / Hosting" value={t.isp} />
+                  <TechRow label="Organization" value={t.org} />
+                  <TechRow label="HTTP Version" value={t.http_version} />
+                </div>
+              </div>
+
+              <div className="tech-card">
+                <h4>Domain & Registration</h4>
+                <div className="tech-rows">
+                  <TechRow label="Registrar" value={t.domain_registrar} />
+                  <TechRow label="Owner / Org" value={t.domain_owner} />
+                  <TechRow label="Created" value={t.domain_created} />
+                  <TechRow label="Expires" value={t.domain_expires} />
+                  <div className="tech-row">
+                    <span className="tech-label">Name Servers</span>
+                    {t.domain_nameservers && t.domain_nameservers.length > 0
+                      ? <div className="tech-tags">{t.domain_nameservers.map((ns, i) => <span key={i} className="tech-tag">{ns}</span>)}</div>
+                      : <span className="tech-value na">{NA_TEXT}</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="tech-card">
+                <h4>SSL Certificate</h4>
+                <div className="tech-rows">
+                  <div className="tech-row">
+                    <span className="tech-label">Status</span>
+                    {t.ssl_valid === true
+                      ? <span className="tech-tag" style={{background:'#1a5c3a',color:'#4ade80'}}>Valid</span>
+                      : t.ssl_valid === false
+                        ? <span className="tech-tag" style={{background:'#5c1a1a',color:'#f87171'}}>Invalid / None</span>
+                        : <span className="tech-value na">{NA_TEXT}</span>}
+                  </div>
+                  <TechRow label="Issuer" value={t.ssl_issuer} />
+                  <TechRow label="Expires" value={t.ssl_expires} />
+                </div>
+              </div>
+
+              <div className="tech-card">
+                <h4>Email Security</h4>
+                <div className="tech-rows">
+                  <TechRow label="Score" value={t.email_security_score} />
+                  <div className="tech-row">
+                    <span className="tech-label">SPF Record</span>
+                    <span className={`tech-value ${t.spf === 'Not configured' ? 'na' : ''}`} style={{wordBreak:'break-all',fontSize:'0.78rem'}}>{t.spf || NA_TEXT}</span>
+                  </div>
+                  <div className="tech-row">
+                    <span className="tech-label">DMARC Record</span>
+                    <span className={`tech-value ${t.dmarc === 'Not configured' ? 'na' : ''}`} style={{wordBreak:'break-all',fontSize:'0.78rem'}}>{t.dmarc || NA_TEXT}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="tech-card">
+                <h4>Web Archive</h4>
+                <div className="tech-rows">
+                  <TechRow label="First Archived" value={t.wayback_first} />
+                </div>
+              </div>
+
+              <div className="tech-card">
+                <h4>Performance & Features</h4>
+                <div className="tech-rows">
+                  <TechRow label="Response Time" value={t.response_time_ms ? `${t.response_time_ms} ms` : null} />
+                  <TechRow label="Page Size" value={t.page_size_kb ? `${t.page_size_kb} KB` : null} />
+                  <div className="tech-row">
+                    <span className="tech-label">Mobile Ready</span>
+                    <span className={`tech-tag ${t.mobile_ready ? '' : 'tech-tag-warn'}`}>{t.mobile_ready ? 'Yes' : 'No'}</span>
+                  </div>
+                  <div className="tech-row">
+                    <span className="tech-label">Cookie Consent</span>
+                    <span className="tech-tag">{t.cookie_banner ? 'Detected' : 'Not detected'}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="tech-card tech-card-full">
+                <h4>Website Purpose</h4>
+                <p className={`tech-purpose ${(!t.purpose || t.purpose === NA_TEXT) ? 'na' : ''}`}>{t.purpose || NA_TEXT}</p>
+              </div>
+
+              {t.social_links && t.social_links.length > 0 && (
+                <div className="tech-card tech-card-full">
+                  <h4>Social Media Presence</h4>
+                  <div className="tech-tags">
+                    {t.social_links.map((s, i) => (
+                      <a key={i} href={s.url} target="_blank" rel="noopener noreferrer" className="tech-tag tech-tag-link">{s.platform}</a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
 
       case 'overview':
         return (
@@ -589,6 +724,7 @@ function App() {
                   {[
                     { key: 'overview', label: 'Overview' },
                     { key: 'vulnerabilities', label: 'Vulnerabilities' },
+                    { key: 'tech', label: 'Tech Info' },
                     { key: 'seo', label: 'SEO' },
                     { key: 'headings', label: 'Headings' },
                     { key: 'paragraphs', label: 'Paragraphs' },
@@ -615,6 +751,7 @@ function App() {
               {[
                 { id: 'overview', label: 'Overview' },
                 { id: 'vulnerabilities', label: 'Vulnerabilities' },
+                { id: 'tech', label: 'Tech Info' },
                 { id: 'seo', label: 'SEO' },
                 { id: 'headings', label: 'Headings' },
                 { id: 'paragraphs', label: 'Paragraphs' },

@@ -612,6 +612,289 @@ def scan_vulnerabilities(url, response, soup):
     }
 
 
+def detect_tech_info(url, response, soup):
+    """Detect technology stack, hosting, domain, and website intelligence."""
+    NA = 'Not publicly disclosed'
+    info = {
+        'frontend': [], 'backend': [], 'cms': None, 'cdn': None,
+        'analytics': [], 'libraries': [], 'social_links': [],
+        'ip': NA, 'country': NA, 'isp': NA, 'org': NA, 'city': NA,
+        'domain_registrar': NA, 'domain_created': NA, 'domain_expires': NA,
+        'domain_owner': NA, 'domain_nameservers': [],
+        'wayback_first': NA, 'wayback_total': NA,
+        'ssl_issuer': NA, 'ssl_expires': NA, 'ssl_valid': None,
+        'http_version': NA, 'response_time_ms': NA, 'page_size_kb': NA,
+        'spf': NA, 'dmarc': NA,
+        'purpose': NA, 'mobile_ready': False, 'cookie_banner': False,
+        'email_security_score': NA,
+    }
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ''
+    headers_resp = response.headers
+
+    # --- Response performance ---
+    info['response_time_ms'] = round(response.elapsed.total_seconds() * 1000)
+    info['page_size_kb'] = round(len(response.content) / 1024, 1)
+
+    # --- HTTP version ---
+    try:
+        ver = response.raw.version
+        info['http_version'] = 'HTTP/2' if ver == 20 else 'HTTP/1.1' if ver == 11 else f'HTTP/{ver}'
+    except Exception:
+        pass
+
+    # --- Tech stack from headers ---
+    server = headers_resp.get('Server', '')
+    powered = headers_resp.get('X-Powered-By', '')
+    via = headers_resp.get('Via', '')
+    cf_ray = headers_resp.get('CF-Ray', '')
+    x_cache = headers_resp.get('X-Cache', '')
+
+    if server:
+        s_low = server.lower()
+        if 'nginx' in s_low:    info['backend'].append('Nginx')
+        if 'apache' in s_low:   info['backend'].append('Apache')
+        if 'iis' in s_low:      info['backend'].append('IIS (Microsoft)')
+        if 'cloudflare' in s_low: info['cdn'] = 'Cloudflare'
+        if 'lighttpd' in s_low: info['backend'].append('Lighttpd')
+        if 'gunicorn' in s_low: info['backend'].append('Gunicorn (Python)')
+        if 'caddy' in s_low:    info['backend'].append('Caddy')
+
+    if powered:
+        p_low = powered.lower()
+        if 'php' in p_low:      info['backend'].append(f'PHP ({powered})')
+        if 'node' in p_low or 'express' in p_low: info['backend'].append('Node.js / Express')
+        if 'asp.net' in p_low:  info['backend'].append('ASP.NET')
+        if 'django' in p_low:   info['backend'].append('Django (Python)')
+        if 'rails' in p_low:    info['backend'].append('Ruby on Rails')
+
+    if cf_ray or 'cloudflare' in server.lower():
+        info['cdn'] = 'Cloudflare'
+    if headers_resp.get('X-Amz-Cf-Id') or headers_resp.get('X-Amz-Request-Id'):
+        info['cdn'] = 'AWS CloudFront'
+    if 'fastly' in via.lower() or 'fastly' in x_cache.lower():
+        info['cdn'] = 'Fastly'
+    if 'akamai' in via.lower():
+        info['cdn'] = 'Akamai'
+
+    # --- Frontend / CMS from HTML ---
+    html_str = str(soup)
+
+    # CMS
+    generator = soup.find('meta', attrs={'name': 'generator'})
+    if generator:
+        gen_val = generator.get('content', '')
+        info['cms'] = gen_val if gen_val else None
+
+    cms_patterns = [
+        ('WordPress', ['/wp-content/', '/wp-includes/']),
+        ('Shopify', ['cdn.shopify.com', 'shopify.com/s/']),
+        ('Wix', ['static.wixstatic.com', 'wix.com']),
+        ('Squarespace', ['squarespace.com', 'sqspcdn.com']),
+        ('Webflow', ['webflow.com', 'wf-']),
+        ('Drupal', ['/sites/default/files', 'drupal']),
+        ('Joomla', ['/components/com_']),
+        ('Ghost', ['ghost.org', 'ghost-theme']),
+    ]
+    if not info['cms']:
+        for cms_name, patterns in cms_patterns:
+            if any(p in html_str for p in patterns):
+                info['cms'] = cms_name
+                break
+
+    # Frontend framework
+    fw_patterns = [
+        ('React', ['data-reactroot', '_reactFiber', '__REACT_', 'react-dom']),
+        ('Next.js', ['__NEXT_DATA__', '_next/static', 'next/dist']),
+        ('Gatsby', ['gatsby-', '__gatsby']),
+        ('Vue.js', ['__vue__', 'data-v-', 'vue.min.js', 'vue.js']),
+        ('Nuxt.js', ['__NUXT__', '_nuxt/']),
+        ('Angular', ['ng-version', 'angular.min.js', 'ng-app']),
+        ('Svelte', ['__svelte', 'svelte/']),
+        ('Ember.js', ['ember.min.js', 'EmberENV']),
+    ]
+    for fw_name, patterns in fw_patterns:
+        if any(p in html_str for p in patterns):
+            info['frontend'].append(fw_name)
+
+    # JS libraries
+    lib_patterns = [
+        ('jQuery', ['jquery.min.js', 'jquery.js', 'jquery-']),
+        ('Bootstrap', ['bootstrap.min.js', 'bootstrap.min.css', 'bootstrap/']),
+        ('Tailwind CSS', ['tailwind', 'tailwindcss']),
+        ('Lodash', ['lodash.min.js', 'lodash.js']),
+        ('D3.js', ['d3.min.js', 'd3.js']),
+        ('Three.js', ['three.min.js', 'three.js']),
+        ('GSAP', ['gsap.min.js', 'TweenMax']),
+    ]
+    for lib_name, patterns in lib_patterns:
+        if any(p in html_str for p in patterns):
+            info['libraries'].append(lib_name)
+
+    # Analytics & marketing
+    analytics_patterns = [
+        ('Google Analytics', ['google-analytics.com/analytics', 'gtag(', 'UA-', 'G-']),
+        ('Google Tag Manager', ['googletagmanager.com', 'GTM-']),
+        ('Facebook Pixel', ['connect.facebook.net', 'fbq(']),
+        ('Hotjar', ['hotjar.com', 'hjid']),
+        ('Mixpanel', ['mixpanel.com', 'mixpanel.init']),
+        ('Segment', ['segment.com/analytics', 'analytics.js']),
+        ('Heap', ['heapanalytics.com', 'heap.track']),
+        ('Intercom', ['intercomcdn.com', 'Intercom(']),
+    ]
+    for tool_name, patterns in analytics_patterns:
+        if any(p in html_str for p in patterns):
+            info['analytics'].append(tool_name)
+
+    # Social media links
+    social_domains = {
+        'facebook.com': 'Facebook', 'twitter.com': 'Twitter', 'x.com': 'X (Twitter)',
+        'instagram.com': 'Instagram', 'linkedin.com': 'LinkedIn', 'youtube.com': 'YouTube',
+        'tiktok.com': 'TikTok', 'github.com': 'GitHub', 'pinterest.com': 'Pinterest',
+    }
+    seen_socials = set()
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        for domain, name in social_domains.items():
+            if domain in href and name not in seen_socials:
+                seen_socials.add(name)
+                info['social_links'].append({'platform': name, 'url': href})
+
+    # Mobile ready
+    viewport = soup.find('meta', attrs={'name': 'viewport'})
+    info['mobile_ready'] = bool(viewport)
+
+    # Cookie banner
+    cookie_patterns = ['cookie-consent', 'cookieconsent', 'gdpr', 'cookie-banner', 'cookie-notice']
+    info['cookie_banner'] = any(p in html_str.lower() for p in cookie_patterns)
+
+    # Purpose from meta description / OG
+    meta_desc = soup.find('meta', attrs={'name': re.compile(r'^description$', re.I)})
+    og_desc = soup.find('meta', property='og:description')
+    info['purpose'] = (meta_desc and meta_desc.get('content', '').strip()) or \
+                      (og_desc and og_desc.get('content', '').strip()) or NA
+
+    # --- Parallel external calls ---
+    def get_ip_geo():
+        try:
+            ip = socket.gethostbyname(hostname)
+            geo = requests.get(f'http://ip-api.com/json/{ip}', timeout=5).json()
+            return {
+                'ip': ip,
+                'country': geo.get('country', NA),
+                'isp': geo.get('isp', NA),
+                'org': geo.get('org', NA),
+                'city': geo.get('city', NA),
+            }
+        except Exception:
+            return {}
+
+    def get_whois():
+        try:
+            import whois as whois_lib
+            w = whois_lib.whois(hostname)
+            created = w.creation_date
+            expires = w.expiration_date
+            if isinstance(created, list): created = created[0]
+            if isinstance(expires, list): expires = expires[0]
+            ns = w.name_servers or []
+            ns = [str(n).lower() for n in (ns[:3] if isinstance(ns, list) else [ns])]
+            return {
+                'domain_registrar': w.registrar or NA,
+                'domain_owner': (w.org or w.name or NA),
+                'domain_created': str(created.date()) if created else NA,
+                'domain_expires': str(expires.date()) if expires else NA,
+                'domain_nameservers': ns,
+            }
+        except Exception:
+            return {}
+
+    def get_wayback():
+        try:
+            cdx = requests.get(
+                f'http://web.archive.org/cdx/search/cdx?url={hostname}&output=json&limit=1&fl=timestamp&from=19900101&to=20261231',
+                timeout=6
+            ).json()
+            if len(cdx) > 1:
+                first_ts = cdx[1][0]
+                first_date = f"{first_ts[:4]}-{first_ts[4:6]}-{first_ts[6:8]}"
+            else:
+                first_date = NA
+            return {'wayback_first': first_date}
+        except Exception:
+            return {}
+
+    def get_ssl_info():
+        try:
+            ctx = ssl.create_default_context()
+            with ctx.wrap_socket(socket.socket(), server_hostname=hostname) as s:
+                s.settimeout(5)
+                s.connect((hostname, 443))
+                cert = s.getpeercert()
+            issuer = dict(x[0] for x in cert.get('issuer', []))
+            not_after = cert.get('notAfter', '')
+            return {
+                'ssl_issuer': issuer.get('organizationName', issuer.get('O', NA)),
+                'ssl_expires': not_after,
+                'ssl_valid': True,
+            }
+        except Exception:
+            return {'ssl_valid': False}
+
+    def get_dns_email_security():
+        try:
+            import dns.resolver
+            result = {}
+            # SPF
+            try:
+                txts = dns.resolver.resolve(hostname, 'TXT', lifetime=5)
+                for r in txts:
+                    txt = r.to_text().strip('"')
+                    if txt.startswith('v=spf1'):
+                        result['spf'] = txt[:80]
+                        break
+                else:
+                    result['spf'] = 'Not configured'
+            except Exception:
+                result['spf'] = 'Not configured'
+            # DMARC
+            try:
+                dmarc_txts = dns.resolver.resolve(f'_dmarc.{hostname}', 'TXT', lifetime=5)
+                for r in dmarc_txts:
+                    txt = r.to_text().strip('"')
+                    if txt.startswith('v=DMARC1'):
+                        result['dmarc'] = txt[:80]
+                        break
+                else:
+                    result['dmarc'] = 'Not configured'
+            except Exception:
+                result['dmarc'] = 'Not configured'
+            # Score
+            configured = sum(1 for k in ['spf', 'dmarc'] if result.get(k, '') not in ('Not configured', NA))
+            result['email_security_score'] = f'{configured}/2 records configured'
+            return result
+        except ImportError:
+            return {}
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {
+            ex.submit(get_ip_geo): 'geo',
+            ex.submit(get_whois): 'whois',
+            ex.submit(get_wayback): 'wayback',
+            ex.submit(get_ssl_info): 'ssl',
+            ex.submit(get_dns_email_security): 'dns',
+        }
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                info.update(result)
+            except Exception:
+                pass
+
+    return info
+
+
 def scrape_website(url):
     """Scrape all data from a website"""
     try:
@@ -623,9 +906,10 @@ def scrape_website(url):
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Perform vulnerability scan and SEO analysis on unmodified soup
+        # Perform vulnerability scan, SEO analysis, and tech detection on unmodified soup
         vulnerability_scan = scan_vulnerabilities(url, response, soup)
         seo_data = analyze_seo(url, soup)
+        tech_info = detect_tech_info(url, response, soup)
 
         # Remove script and style elements
         for script in soup(["script", "style", "nav", "footer", "header"]):
@@ -643,7 +927,8 @@ def scrape_website(url):
             'meta_tags': {},
             'all_text': '',
             'vulnerabilities': vulnerability_scan,
-            'seo': seo_data
+            'seo': seo_data,
+            'tech': tech_info,
         }
 
         # Extract title
