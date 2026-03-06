@@ -1210,7 +1210,7 @@ def export_csv(session_id):
 
     sections_param = request.args.get('sections', '')
     sections = set(sections_param.split(',')) if sections_param else {
-        'overview', 'vulnerabilities', 'seo', 'headings', 'paragraphs',
+        'overview', 'vulnerabilities', 'tech', 'seo', 'headings', 'paragraphs',
         'links', 'images', 'tables', 'lists', 'fulltext'
     }
     data = scraped_data_store[session_id]
@@ -1224,6 +1224,45 @@ def export_csv(session_id):
         if 'overview' in sections:
             output.write(f'Title,"{esc(data["title"])}"\n')
             output.write(f'URL,{data["url"]}\n\n')
+
+        if 'tech' in sections and 'tech' in data:
+            t = data['tech']
+            output.write('Tech Intelligence\nField,Value\n')
+            rows = [
+                ('Frontend Framework', ', '.join(t.get('frontend', [])) or 'Not detected'),
+                ('Backend / Server',   ', '.join(t.get('backend', []))  or 'Not detected'),
+                ('CMS',               t.get('cms') or 'Not detected'),
+                ('CDN',               t.get('cdn') or 'Not detected'),
+                ('JS Libraries',      ', '.join(t.get('libraries', [])) or 'Not detected'),
+                ('Analytics Tools',   ', '.join(t.get('analytics', [])) or 'Not detected'),
+                ('IP Address',        t.get('ip', '')),
+                ('Country',           t.get('country', '')),
+                ('City',              t.get('city', '')),
+                ('ISP / Hosting',     t.get('isp', '')),
+                ('Organization',      t.get('org', '')),
+                ('Domain Registrar',  t.get('domain_registrar', '')),
+                ('Domain Owner',      t.get('domain_owner', '')),
+                ('Domain Created',    t.get('domain_created', '')),
+                ('Domain Expires',    t.get('domain_expires', '')),
+                ('Name Servers',      ', '.join(t.get('domain_nameservers', []))),
+                ('SSL Issuer',        t.get('ssl_issuer', '')),
+                ('SSL Expires',       t.get('ssl_expires', '')),
+                ('SSL Valid',         str(t.get('ssl_valid', ''))),
+                ('SPF Record',        t.get('spf', '')),
+                ('DMARC Record',      t.get('dmarc', '')),
+                ('Email Security',    t.get('email_security_score', '')),
+                ('First Archived',    t.get('wayback_first', '')),
+                ('HTTP Version',      t.get('http_version', '')),
+                ('Response Time',     f"{t.get('response_time_ms', '')} ms"),
+                ('Page Size',         f"{t.get('page_size_kb', '')} KB"),
+                ('Mobile Ready',      str(t.get('mobile_ready', ''))),
+                ('Cookie Consent',    str(t.get('cookie_banner', ''))),
+                ('Website Purpose',   t.get('purpose', '')),
+                ('Social Profiles',   ', '.join(s['platform'] for s in t.get('social_links', []))),
+            ]
+            for field, val in rows:
+                output.write(f'"{esc(field)}","{esc(val)}"\n')
+            output.write('\n')
 
         if 'vulnerabilities' in sections:
             vulns = data.get('vulnerabilities', {}).get('vulnerabilities', [])
@@ -1318,7 +1357,7 @@ def export_doc(session_id):
 
     sections_param = request.args.get('sections', '')
     sections = set(sections_param.split(',')) if sections_param else {
-        'overview', 'vulnerabilities', 'seo', 'headings', 'paragraphs',
+        'overview', 'vulnerabilities', 'tech', 'seo', 'headings', 'paragraphs',
         'links', 'images', 'tables', 'lists', 'fulltext'
     }
     data = scraped_data_store[session_id]
@@ -1392,6 +1431,43 @@ def export_doc(session_id):
                 bp = doc.add_paragraph(style='List Bullet')
                 bp.add_run(f"[{v['severity']}] {v['type']}: ").bold = True
                 bp.add_run(v['description'])
+            doc.add_paragraph()
+
+        if 'tech' in sections and 'tech' in data:
+            t = data['tech']
+            doc.add_heading('Website Intelligence', level=1)
+            tech_rows = [
+                ('Frontend Framework', ', '.join(t.get('frontend', [])) or 'Not detected'),
+                ('Backend / Server',   ', '.join(t.get('backend', []))  or 'Not detected'),
+                ('CMS',               t.get('cms') or 'Not detected'),
+                ('CDN Provider',      t.get('cdn') or 'Not detected'),
+                ('JS Libraries',      ', '.join(t.get('libraries', [])) or 'Not detected'),
+                ('Analytics Tools',   ', '.join(t.get('analytics', [])) or 'Not detected'),
+                ('IP Address',        t.get('ip', '')),
+                ('Country',           t.get('country', '')),
+                ('ISP / Hosting',     t.get('isp', '')),
+                ('Domain Registrar',  t.get('domain_registrar', '')),
+                ('Domain Owner',      t.get('domain_owner', '')),
+                ('Domain Created',    t.get('domain_created', '')),
+                ('Domain Expires',    t.get('domain_expires', '')),
+                ('SSL Issuer',        t.get('ssl_issuer', '')),
+                ('SSL Valid',         'Yes' if t.get('ssl_valid') else 'No'),
+                ('SPF Record',        t.get('spf', '')),
+                ('DMARC Record',      t.get('dmarc', '')),
+                ('First Archived',    t.get('wayback_first', '')),
+                ('HTTP Version',      t.get('http_version', '')),
+                ('Response Time',     f"{t.get('response_time_ms', '')} ms"),
+                ('Mobile Ready',      'Yes' if t.get('mobile_ready') else 'No'),
+                ('Website Purpose',   t.get('purpose', '')),
+            ]
+            tt = doc.add_table(rows=1, cols=2)
+            tt.style = 'Table Grid'
+            for c, h in zip(tt.rows[0].cells, ['Field', 'Value']):
+                c.paragraphs[0].add_run(h).bold = True
+            for field, val in tech_rows:
+                r = tt.add_row()
+                r.cells[0].text = field
+                r.cells[1].text = str(val) if val else 'Not publicly disclosed'
             doc.add_paragraph()
 
         if 'seo' in sections and 'seo' in data:
@@ -1828,6 +1904,65 @@ def admin_exports():
     rows = conn.execute('SELECT url,timestamp,export_type FROM export_history ORDER BY id DESC LIMIT 100').fetchall()
     conn.close()
     return jsonify([{'url': r[0], 'timestamp': r[1], 'export_type': r[2]} for r in rows])
+
+
+@app.route('/admin/api/blocks')
+@admin_required
+def admin_blocks():
+    now = int(datetime.now(timezone.utc).timestamp())
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        'SELECT ip, reason, rule, blocked_at, unblock_at FROM blocks ORDER BY blocked_at DESC'
+    ).fetchall()
+    conn.close()
+    result = []
+    for ip, reason, rule, blocked_at, unblock_at in rows:
+        active = now < unblock_at
+        remaining = max(0, unblock_at - now)
+        result.append({
+            'ip': ip, 'reason': reason, 'rule': rule,
+            'blocked_at': datetime.fromtimestamp(blocked_at, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            'unblock_at': datetime.fromtimestamp(unblock_at, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            'active': active,
+            'remaining_seconds': remaining,
+        })
+    return jsonify(result)
+
+
+@app.route('/admin/api/blocks/unblock', methods=['POST'])
+@admin_required
+def admin_unblock():
+    ip = request.get_json().get('ip', '').strip()
+    if not ip:
+        return jsonify({'error': 'IP required'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('DELETE FROM blocks WHERE ip=?', (ip,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'message': f'{ip} unblocked'})
+
+
+@app.route('/admin/api/rate-stats')
+@admin_required
+def admin_rate_stats():
+    now = int(datetime.now(timezone.utc).timestamp())
+    conn = sqlite3.connect(DB_PATH)
+    total_blocks = conn.execute('SELECT COUNT(*) FROM blocks').fetchone()[0]
+    active_blocks = conn.execute('SELECT COUNT(*) FROM blocks WHERE unblock_at > ?', (now,)).fetchone()[0]
+    scans_last_hour = conn.execute(
+        'SELECT COUNT(*) FROM rate_events WHERE ts >= ?', (now - 3600,)
+    ).fetchone()[0]
+    top_ips = conn.execute(
+        'SELECT ip, COUNT(*) as c FROM rate_events WHERE ts >= ? GROUP BY ip ORDER BY c DESC LIMIT 10',
+        (now - 3600,)
+    ).fetchall()
+    conn.close()
+    return jsonify({
+        'total_blocks_ever': total_blocks,
+        'active_blocks': active_blocks,
+        'scans_last_hour': scans_last_hour,
+        'top_ips_last_hour': [{'ip': r[0], 'scans': r[1]} for r in top_ips],
+    })
 
 
 if __name__ == '__main__':
