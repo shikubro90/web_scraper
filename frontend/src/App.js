@@ -477,24 +477,54 @@ function App() {
         const seo = data.seo;
         if (!seo) return <div className="tab-content"><p className="no-data">No SEO data available</p></div>;
         const getSeoClass = s => s >= 80 ? 'low' : s >= 50 ? 'medium' : 'high';
+        const op = seo.onpage || {};
+
         const seoChecks = [
-          { label: 'Title', ok: seo.title_ok, detail: seo.title ? `"${seo.title.slice(0, 60)}" (${seo.title_length} chars)` : 'Missing' },
+          { label: 'Title Tag', ok: seo.title_ok, detail: seo.title ? `"${seo.title.slice(0, 60)}" (${seo.title_length} chars)` : 'Missing' },
           { label: 'Meta Description', ok: seo.description_ok, detail: seo.description ? `${seo.description_length} chars` : 'Missing' },
           { label: 'Single H1 Tag', ok: seo.h1_ok, detail: `${seo.h1_count} found${seo.h1_texts?.[0] ? ` — "${seo.h1_texts[0].slice(0, 50)}"` : ''}` },
           { label: 'Image Alt Tags', ok: seo.images_missing_alt === 0, detail: `${seo.images_missing_alt} missing of ${seo.images_total}` },
           { label: 'Canonical URL', ok: !!seo.canonical, detail: seo.canonical || 'Not set' },
-          { label: 'Open Graph Tags', ok: !!seo.og?.title, detail: seo.og?.title ? `og:title set` : 'Missing' },
+          { label: 'Open Graph Tags', ok: !!seo.og?.title, detail: seo.og?.title ? 'og:title set' : 'Missing' },
           { label: 'Twitter Card', ok: !!seo.twitter?.card, detail: seo.twitter?.card || 'Not set' },
         ];
+
+        const onPageChecks = [
+          { label: 'URL Length', ok: op.url_ok, detail: `${op.url_length} chars ${op.url_ok ? '(good)' : '(too long, keep ≤100)'}` },
+          { label: 'URL Uses Hyphens', ok: !op.url_has_underscores, detail: op.url_has_underscores ? 'Uses underscores — prefer hyphens' : 'Clean URL structure' },
+          { label: 'HTTPS', ok: op.url_is_https, detail: op.url_is_https ? 'Secure' : 'Not using HTTPS' },
+          { label: 'Heading Hierarchy', ok: op.heading_hierarchy_ok, detail: op.heading_counts ? `H1:${op.heading_counts.h1} H2:${op.heading_counts.h2} H3:${op.heading_counts.h3} H4:${op.heading_counts.h4}` : 'N/A' },
+          { label: 'Internal Links', ok: op.internal_links_ok, detail: `${op.internal_links_count} internal, ${op.external_links_count} external` },
+          { label: 'Word Count', ok: op.word_count_ok, detail: `${op.word_count} words ${op.word_count_ok ? '(good)' : '(aim for 300+)'}` },
+          { label: 'Text/HTML Ratio', ok: op.text_ratio_ok, detail: `${op.text_html_ratio}% ${op.text_ratio_ok ? '(good)' : '(too low)'}` },
+          { label: 'Keyword in Title', ok: op.keyword_in_title, detail: op.primary_keyword ? `"${op.primary_keyword}"` : 'No keywords detected' },
+          { label: 'Keyword in H1', ok: op.keyword_in_h1, detail: op.primary_keyword ? `"${op.primary_keyword}"` : 'No keywords detected' },
+          { label: 'Keyword in Description', ok: op.keyword_in_description, detail: op.primary_keyword ? `"${op.primary_keyword}"` : 'No keywords detected' },
+          { label: 'Keyword in URL', ok: op.keyword_in_url, detail: op.primary_keyword ? `"${op.primary_keyword}"` : 'No keywords detected' },
+          { label: 'Image Lazy Loading', ok: op.images_lazy_count > 0, detail: `${op.images_lazy_count} of ${op.images_total} images use lazy loading` },
+        ];
+
         return (
           <div className="tab-content">
-            <div className="vuln-header">
-              <h3>SEO Analysis</h3>
-              <div className={`risk-score ${getSeoClass(seo.score)}`}>
-                <span className="score-value">{seo.score}</span>
-                <span className="score-label">SEO Score</span>
+
+            {/* Score bar */}
+            <div className="seo-scores-row">
+              <div className="seo-score-card">
+                <div className={`risk-score ${getSeoClass(seo.score)}`}>
+                  <span className="score-value">{seo.score}</span>
+                  <span className="score-label">Overall SEO</span>
+                </div>
+              </div>
+              <div className="seo-score-card">
+                <div className={`risk-score ${getSeoClass(op.score ?? 0)}`}>
+                  <span className="score-value">{op.score ?? '—'}</span>
+                  <span className="score-label">On-Page SEO</span>
+                </div>
               </div>
             </div>
+
+            {/* ── Section 1: Technical SEO ── */}
+            <div className="seo-section-header">Technical SEO</div>
             <div className="seo-checks">
               {seoChecks.map(({ label, ok, detail }, i) => (
                 <div key={i} className={`seo-check-item ${ok ? 'pass' : 'fail'}`}>
@@ -506,11 +536,87 @@ function App() {
                 </div>
               ))}
             </div>
-            <div className="section">
-              <h4>
-                Broken Links
-                <span className="link-check-info"> (checked {seo.links_checked} same-host links)</span>
-              </h4>
+
+            {/* ── Section 2: On-Page SEO ── */}
+            <div className="seo-section-header" style={{marginTop:'24px'}}>On-Page SEO</div>
+
+            {op.issues?.length > 0 && (
+              <div className="onpage-issues">
+                <strong>Issues to fix:</strong>
+                <ul>{op.issues.map((iss, i) => <li key={i}>{iss}</li>)}</ul>
+              </div>
+            )}
+
+            <div className="seo-checks">
+              {onPageChecks.map(({ label, ok, detail }, i) => (
+                <div key={i} className={`seo-check-item ${ok ? 'pass' : 'fail'}`}>
+                  <span className={`seo-check-icon ${ok ? 'pass' : 'fail'}`}>{ok ? '✓' : '✗'}</span>
+                  <div>
+                    <strong>{label}</strong>
+                    <span className="seo-check-detail">{detail}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Content metrics ── */}
+            <div className="seo-section-header" style={{marginTop:'24px'}}>Content Metrics</div>
+            <div className="onpage-metrics">
+              {[
+                { label: 'Word Count',       value: op.word_count },
+                { label: 'Paragraphs',       value: op.paragraph_count },
+                { label: 'Avg Sentence Len', value: op.avg_sentence_len ? `${op.avg_sentence_len} words` : '—' },
+                { label: 'Text/HTML Ratio',  value: op.text_html_ratio ? `${op.text_html_ratio}%` : '—' },
+                { label: 'Internal Links',   value: op.internal_links_count },
+                { label: 'External Links',   value: op.external_links_count },
+                { label: 'Images Total',     value: op.images_total },
+                { label: 'Lazy Loaded',      value: op.images_lazy_count },
+              ].map(({ label, value }, i) => (
+                <div key={i} className="onpage-metric-card">
+                  <span className="onpage-metric-value">{value ?? '—'}</span>
+                  <span className="onpage-metric-label">{label}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Heading hierarchy ── */}
+            {op.heading_counts && (
+              <div className="section" style={{marginTop:'20px'}}>
+                <h4>Heading Tag Distribution</h4>
+                <div className="heading-dist">
+                  {['h1','h2','h3','h4','h5','h6'].map(tag => (
+                    <div key={tag} className="heading-dist-row">
+                      <span className="heading-dist-tag">{tag.toUpperCase()}</span>
+                      <div className="heading-dist-bar-wrap">
+                        <div
+                          className="heading-dist-bar"
+                          style={{ width: `${Math.min(100, (op.heading_counts[tag] || 0) * 20)}%` }}
+                        />
+                      </div>
+                      <span className="heading-dist-count">{op.heading_counts[tag] || 0}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Top keywords ── */}
+            {op.top_keywords?.length > 0 && (
+              <div className="section" style={{marginTop:'20px'}}>
+                <h4>Top Keywords Found on Page</h4>
+                <div className="keyword-cloud">
+                  {op.top_keywords.map(({ word, count }, i) => (
+                    <span key={i} className="keyword-chip" style={{ fontSize: `${0.75 + (count / op.top_keywords[0].count) * 0.5}rem` }}>
+                      {word} <em>{count}</em>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Broken links ── */}
+            <div className="section" style={{marginTop:'20px'}}>
+              <h4>Broken Links <span className="link-check-info">(checked {seo.links_checked} same-host links)</span></h4>
               {seo.broken_links?.length > 0 ? (
                 <div className="links-list">
                   {seo.broken_links.map((bl, i) => (
@@ -524,6 +630,8 @@ function App() {
                 <p className="no-data">No broken links found ✓</p>
               )}
             </div>
+
+            {/* ── OG tags ── */}
             {(seo.og?.title || seo.og?.description || seo.og?.image) && (
               <div className="section">
                 <h4>Open Graph Tags</h4>

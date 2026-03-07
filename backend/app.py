@@ -615,7 +615,127 @@ def analyze_seo(url, soup):
     seo['broken_links'] = broken
     seo['links_checked'] = len(candidate_links)
 
-    # SEO score
+    # ── On-Page SEO Analysis ──────────────────────────────────────────────────
+
+    # URL structure
+    url_path = base_parsed.path or '/'
+    url_full = url
+    seo['onpage'] = op = {}
+
+    op['url_length'] = len(url_full)
+    op['url_ok']     = len(url_full) <= 100
+    op['url_has_underscores'] = '_' in url_path
+    op['url_has_params']      = bool(base_parsed.query)
+    op['url_is_https']        = base_parsed.scheme == 'https'
+    op['url_path']            = url_path
+
+    # Heading hierarchy (H1–H6)
+    heading_counts = {}
+    all_headings_ordered = []
+    for level in range(1, 7):
+        tags = soup.find_all(f'h{level}')
+        heading_counts[f'h{level}'] = len(tags)
+        for t in tags:
+            all_headings_ordered.append({'level': level, 'text': t.get_text(strip=True)[:120]})
+    op['heading_counts']   = heading_counts
+    op['heading_hierarchy_ok'] = (
+        heading_counts.get('h1', 0) == 1 and
+        heading_counts.get('h2', 0) >= 1 and
+        heading_counts.get('h1', 0) <= heading_counts.get('h2', 0) + 1
+    )
+
+    # Internal vs external links
+    internal_links, external_links = [], []
+    for a in soup.find_all('a', href=True):
+        href = a['href'].strip()
+        if not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
+            continue
+        full = urljoin(url, href)
+        fp = urlparse(full)
+        if fp.netloc == base_parsed.netloc:
+            internal_links.append(full)
+        elif fp.netloc:
+            external_links.append(full)
+    op['internal_links_count'] = len(internal_links)
+    op['external_links_count'] = len(external_links)
+    op['internal_links_ok']    = len(internal_links) >= 3
+
+    # Images: lazy loading
+    lazy_count = sum(1 for img in all_imgs if img.get('loading') == 'lazy' or img.get('data-src'))
+    op['images_total']       = len(all_imgs)
+    op['images_missing_alt'] = seo['images_missing_alt']
+    op['images_lazy_count']  = lazy_count
+    op['images_alt_ok']      = seo['images_missing_alt'] == 0
+
+    # Content metrics
+    body_text = soup.get_text(separator=' ', strip=True)
+    words = [w for w in re.split(r'\s+', body_text) if w]
+    word_count = len(words)
+    sentences  = [s.strip() for s in re.split(r'[.!?]+', body_text) if len(s.strip()) > 10]
+    avg_sentence_len = round(sum(len(s.split()) for s in sentences) / max(len(sentences), 1), 1)
+    html_len  = len(str(soup))
+    text_len  = len(body_text)
+    text_ratio = round((text_len / max(html_len, 1)) * 100, 1)
+
+    op['word_count']        = word_count
+    op['word_count_ok']     = word_count >= 300
+    op['avg_sentence_len']  = avg_sentence_len
+    op['text_html_ratio']   = text_ratio
+    op['text_ratio_ok']     = text_ratio >= 10
+    op['paragraph_count']   = len(soup.find_all('p'))
+
+    # Keyword extraction — top 10 meaningful words
+    stopwords = {
+        'the','a','an','and','or','but','in','on','at','to','for','of','with',
+        'is','are','was','were','be','been','being','have','has','had','do',
+        'does','did','will','would','could','should','may','might','shall',
+        'this','that','these','those','it','its','by','from','as','into',
+        'through','during','before','after','above','below','between','out',
+        'up','down','about','than','so','if','not','no','nor','yet','both',
+        'either','each','few','more','most','other','some','such','any','all',
+    }
+    freq = {}
+    for w in words:
+        w_clean = re.sub(r'[^a-z]', '', w.lower())
+        if len(w_clean) >= 4 and w_clean not in stopwords:
+            freq[w_clean] = freq.get(w_clean, 0) + 1
+    top_keywords = sorted(freq.items(), key=lambda x: -x[1])[:10]
+    op['top_keywords'] = [{'word': w, 'count': c} for w, c in top_keywords]
+
+    # Keyword placement checks (using top keyword if available)
+    if top_keywords:
+        kw = top_keywords[0][0]
+        op['keyword_in_title']       = kw in (seo.get('title') or '').lower()
+        op['keyword_in_description'] = kw in (seo.get('description') or '').lower()
+        op['keyword_in_h1']          = any(kw in h.get_text(strip=True).lower() for h in soup.find_all('h1'))
+        op['keyword_in_url']         = kw in url_full.lower()
+        op['primary_keyword']        = kw
+    else:
+        op['keyword_in_title'] = op['keyword_in_description'] = False
+        op['keyword_in_h1'] = op['keyword_in_url'] = False
+        op['primary_keyword'] = None
+
+    # On-page score (out of 100)
+    op_score = 100
+    deductions = [
+        (not op['url_ok'],               5,  'URL too long'),
+        (op['url_has_underscores'],       5,  'URL uses underscores'),
+        (not op['heading_hierarchy_ok'],  10, 'Poor heading hierarchy'),
+        (not op['internal_links_ok'],     10, 'Too few internal links'),
+        (not op['images_alt_ok'],         10, 'Images missing alt text'),
+        (not op['word_count_ok'],         15, 'Low word count (<300)'),
+        (not op['text_ratio_ok'],         5,  'Low text-to-HTML ratio'),
+        (not op['keyword_in_title'],      10, 'Primary keyword not in title'),
+        (not op['keyword_in_h1'],         10, 'Primary keyword not in H1'),
+        (not op['keyword_in_description'],5,  'Primary keyword not in meta description'),
+    ]
+    op['issues'] = [msg for cond, _, msg in deductions if cond]
+    for cond, pts, _ in deductions:
+        if cond:
+            op_score -= pts
+    op['score'] = max(0, op_score)
+
+    # ── Overall SEO score ─────────────────────────────────────────────────────
     score = 100
     if not seo['title_ok']:            score -= 15
     if not seo['description_ok']:     score -= 15
