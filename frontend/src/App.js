@@ -1,104 +1,184 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import { ClipLoader } from 'react-spinners';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import { scrapeWebsite } from './scraper';
 import './App.css';
-
-const API_URL = 'http://localhost:5001';
 
 function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
-  const [sessionId, setSessionId] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [vulnFilter, setVulnFilter] = useState('All');
   const [imagesToShow, setImagesToShow] = useState(10);
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [exportSections, setExportSections] = useState({
-    overview: true, vulnerabilities: true, seo: true, headings: true,
-    paragraphs: true, links: true, images: true, tables: true, lists: true, fulltext: true,
+    overview: true, vulnerabilities: true, seo: true, content: true,
+    images: true, tech_info: true, pages: true, business: true,
   });
+  const [scanProgress, setScanProgress] = useState(0);
+  const [scanStep, setScanStep] = useState('');
 
-  const getSelectedSections = () =>
-    Object.entries(exportSections).filter(([, v]) => v).map(([k]) => k).join(',');
+  const getSelectedSections = () => {
+    const sectionMap = {
+      content: ['headings', 'paragraphs', 'links', 'tables', 'lists', 'fulltext'],
+      tech_info: ['domain_hosting', 'tech_stack', 'ssl', 'social'],
+      business: ['business', 'sales'],
+    };
+    const expanded = [];
+    Object.entries(exportSections).forEach(([key, val]) => {
+      if (!val) return;
+      if (sectionMap[key]) expanded.push(...sectionMap[key]);
+      else expanded.push(key);
+    });
+    return [...new Set(expanded)].join(',');
+  };
 
   const handleScrape = async (e) => {
     e.preventDefault();
 
-    if (!url.trim()) {
+    let cleanUrl = url.trim();
+    if (!cleanUrl) {
       toast.error('Please enter a URL');
       return;
+    }
+    if (!/^https?:\/\//i.test(cleanUrl)) {
+      cleanUrl = 'https://' + cleanUrl;
+      setUrl(cleanUrl);
     }
 
     setLoading(true);
     setData(null);
-    setSessionId(null);
     setImagesToShow(10);
 
-    try {
-      const response = await axios.post(`${API_URL}/api/scrape`, { url });
+    setScanProgress(0);
+    setScanStep('Initialising scan...');
+    const steps = [
+      'Fetching page content...',
+      'Detecting tech stack...',
+      'Checking SSL certificate...',
+      'Looking up domain info...',
+      'Scanning hosting details...',
+      'Discovering pages...',
+      'Analysing links...',
+      'Detecting social presence...',
+      'Running SEO audit...',
+      'Generating sales intelligence...',
+    ];
+    let stepIndex = 0;
+    const progressInterval = setInterval(() => {
+      setScanStep(steps[Math.min(stepIndex, steps.length - 1)]);
+      setScanProgress(Math.min(88, ((stepIndex + 1) / steps.length) * 88));
+      stepIndex++;
+      if (stepIndex >= steps.length) clearInterval(progressInterval);
+    }, 1800);
 
-      if (response.data.success) {
-        setData(response.data.data);
-        setSessionId(response.data.session_id);
-        toast.success('Website scraped successfully!');
-      }
+    try {
+      const result = await scrapeWebsite(cleanUrl);
+      setData(result);
+      clearInterval(progressInterval);
+      setScanProgress(100);
+      setScanStep('Scan complete!');
+      toast.success('Website scraped successfully!');
     } catch (error) {
-      const errorMessage = error.response?.data?.error || 'Failed to scrape website';
-      toast.error(errorMessage);
+      clearInterval(progressInterval);
+      toast.error(error.message || 'Failed to scrape website. The site may block external requests.');
     } finally {
       setLoading(false);
+      setTimeout(() => { setScanProgress(0); setScanStep(''); }, 1500);
     }
   };
 
-  const handleExportCSV = async () => {
-    if (!sessionId) return;
-    try {
-      const response = await axios.get(
-        `${API_URL}/api/export/csv/${sessionId}?sections=${getSelectedSections()}`,
-        { responseType: 'blob' }
-      );
-      const blob = new Blob([response.data], { type: 'text/csv' });
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `vulnscan_${new Date().toISOString().split('T')[0]}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(downloadUrl);
-      toast.success('CSV downloaded successfully!');
-    } catch (error) {
-      toast.error('Failed to download CSV');
-    }
-  };
+  const handleExportCSV = () => {
+    if (!data) return;
+    const esc = s => String(s ?? '').replace(/"/g, '""').replace(/\n/g, ' ');
+    const sections = getSelectedSections().split(',');
+    const rows = [];
 
-  const handleExportDOC = async () => {
-    if (!sessionId) return;
-    try {
-      const response = await axios.get(
-        `${API_URL}/api/export/doc/${sessionId}?sections=${getSelectedSections()}`,
-        { responseType: 'blob' }
-      );
-      const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `vulnscan_${new Date().toISOString().split('T')[0]}.docx`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(downloadUrl);
-      toast.success('DOCX downloaded successfully!');
-    } catch (error) {
-      toast.error('Failed to download DOCX');
+    if (sections.includes('overview')) {
+      rows.push(`Title,"${esc(data.title)}"`);
+      rows.push(`URL,${data.url}`);
+      rows.push('');
     }
+    if (sections.includes('vulnerabilities') && data.vulnerabilities?.vulnerabilities?.length) {
+      rows.push('Vulnerabilities');
+      rows.push('Severity,Type,Description');
+      data.vulnerabilities.vulnerabilities.forEach(v =>
+        rows.push(`"${esc(v.severity)}","${esc(v.type)}","${esc(v.description)}"`)
+      );
+      rows.push('');
+    }
+    if (sections.includes('seo') && data.seo) {
+      const s = data.seo;
+      rows.push('SEO Analysis');
+      rows.push(`Score,${s.score ?? 'N/A'}`);
+      rows.push(`Title OK,${s.title_ok}`);
+      rows.push(`Description OK,${s.description_ok}`);
+      rows.push(`H1 Count,${s.h1_count}`);
+      rows.push(`Images Missing Alt,${s.images_missing_alt}`);
+      rows.push('');
+    }
+    if (sections.includes('headings') && data.headings?.length) {
+      rows.push('Headings');
+      rows.push('Level,Text');
+      data.headings.forEach(h => rows.push(`H${h.level},"${esc(h.text)}"`));
+      rows.push('');
+    }
+    if (sections.includes('paragraphs') && data.paragraphs?.length) {
+      rows.push('Paragraphs');
+      data.paragraphs.forEach(p => rows.push(`"${esc(p)}"`));
+      rows.push('');
+    }
+    if (sections.includes('links') && data.links?.length) {
+      rows.push('Links');
+      rows.push('Text,URL');
+      data.links.slice(0, 100).forEach(l => rows.push(`"${esc(l.text)}",${l.url}`));
+      rows.push('');
+    }
+    if (sections.includes('images') && data.images?.length) {
+      rows.push('Images');
+      rows.push('URL,Alt');
+      data.images.forEach(img => rows.push(`"${esc(img.src)}","${esc(img.alt)}"`));
+      rows.push('');
+    }
+    if (sections.includes('pages') && data.pages?.pages?.length) {
+      rows.push('Pages');
+      data.pages.pages.forEach((p, i) => rows.push(`${i + 1},"${esc(p.url)}"`));
+      rows.push('');
+    }
+
+    const csv = rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    let domain = 'report';
+    try { domain = new URL(data.url).hostname; } catch(e) {}
+    link.download = `scana_${domain}_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast.success('CSV downloaded!');
   };
 
   const renderTabContent = () => {
     if (!data) return null;
+
+    const getPageName = (pageUrl) => {
+      try {
+        let path = pageUrl;
+        if (pageUrl && pageUrl.startsWith('http')) {
+          path = new URL(pageUrl).pathname;
+        }
+        if (!path || path === '/') return 'Home';
+        const parts = path.replace(/\/$/, '').split('/').filter(Boolean);
+        return parts.map(p => p.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())).join(' / ');
+      } catch {
+        return pageUrl || 'Home';
+      }
+    };
 
     switch (activeTab) {
       case 'vulnerabilities':
@@ -106,7 +186,6 @@ function App() {
         const summary = vulnData?.summary || { total: 0, critical: 0, high: 0, medium: 0, low: 0, risk_score: 0 };
         let vulnList = vulnData?.vulnerabilities || [];
 
-        // Filter vulnerabilities by severity
         if (vulnFilter !== 'All') {
           vulnList = vulnList.filter(v => v.severity === vulnFilter);
         }
@@ -258,62 +337,6 @@ function App() {
           </div>
         );
 
-      case 'headings':
-        return (
-          <div className="tab-content">
-            <h3>Headings ({data.headings?.length || 0})</h3>
-            {data.headings?.length > 0 ? (
-              <div className="headings-list">
-                {data.headings.map((heading, index) => (
-                  <div key={index} className={`heading-item h${heading.level}`}>
-                    <span className="heading-level">H{heading.level}</span>
-                    <span className="heading-text">{heading.text}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="no-data">No headings found</p>
-            )}
-          </div>
-        );
-
-      case 'paragraphs':
-        return (
-          <div className="tab-content">
-            <h3>Paragraphs ({data.paragraphs?.length || 0})</h3>
-            {data.paragraphs?.length > 0 ? (
-              <div className="paragraphs-list">
-                {data.paragraphs.map((para, index) => (
-                  <p key={index} className="paragraph-item">{para}</p>
-                ))}
-              </div>
-            ) : (
-              <p className="no-data">No paragraphs found</p>
-            )}
-          </div>
-        );
-
-      case 'links':
-        return (
-          <div className="tab-content">
-            <h3>Links ({data.links?.length || 0})</h3>
-            {data.links?.length > 0 ? (
-              <div className="links-list">
-                {data.links.map((link, index) => (
-                  <div key={index} className="link-item">
-                    <a href={link.url} target="_blank" rel="noopener noreferrer">
-                      {link.text || link.url}
-                    </a>
-                    <span className="link-url">{link.url}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="no-data">No links found</p>
-            )}
-          </div>
-        );
-
       case 'seo': {
         const seo = data.seo;
         if (!seo) return <div className="tab-content"><p className="no-data">No SEO data available</p></div>;
@@ -400,17 +423,11 @@ function App() {
                             if (placeholder) placeholder.style.display = 'none';
                           }}
                           onError={(e) => {
-                            const el = e.currentTarget;
-                            if (!el.dataset.usedProxy) {
-                              el.dataset.usedProxy = 'true';
-                              el.src = `${API_URL}/api/proxy-image?url=${encodeURIComponent(img.src)}`;
-                            } else {
-                              el.style.display = 'none';
-                              const placeholder = el.parentElement.querySelector('.image-placeholder');
-                              if (placeholder) {
-                                placeholder.classList.add('failed');
-                                placeholder.querySelector('span').textContent = '❌ Failed';
-                              }
+                            e.currentTarget.style.display = 'none';
+                            const placeholder = e.currentTarget.parentElement.querySelector('.image-placeholder');
+                            if (placeholder) {
+                              placeholder.classList.add('failed');
+                              placeholder.querySelector('span').textContent = '❌ Failed';
                             }
                           }}
                         />
@@ -440,80 +457,533 @@ function App() {
           </div>
         );
 
-      case 'tables':
+      case 'content': {
+        const ContentCard = ({ title, count, children }) => (
+          <div className="content-card">
+            <div className="content-card-header">
+              <h4>{title}</h4>
+              {count !== undefined && <span className="content-card-count">{count}</span>}
+            </div>
+            <div className="content-card-body">{children}</div>
+          </div>
+        );
+
         return (
           <div className="tab-content">
-            <h3>Tables ({data.tables?.length || 0})</h3>
-            {data.tables?.length > 0 ? (
-              <div className="tables-list">
-                {data.tables.map((table, tIndex) => (
-                  <div key={tIndex} className="table-container">
-                    <h4>Table {tIndex + 1}</h4>
-                    <table className="data-table">
-                      <tbody>
-                        {table.map((row, rIndex) => (
-                          <tr key={rIndex}>
-                            {row.map((cell, cIndex) => (
-                              <td key={cIndex}>{cell}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+            <div className="content-cards">
+              <ContentCard title="Headings" count={data.headings?.length || 0}>
+                {data.headings?.length > 0 ? (
+                  <div className="headings-list">
+                    {data.headings.map((heading, i) => (
+                      <div key={i} className={`heading-item h${heading.level}`}>
+                        <span className="heading-level">H{heading.level}</span>
+                        <span className="heading-text">{heading.text}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <p className="no-data">No tables found</p>
-            )}
-          </div>
-        );
+                ) : <p className="no-data">No headings found</p>}
+              </ContentCard>
 
-      case 'lists':
-        return (
-          <div className="tab-content">
-            <h3>Lists</h3>
-            {data.lists?.ul?.length > 0 && (
-              <div className="lists-section">
-                <h4>Unordered Lists ({data.lists.ul.length})</h4>
-                {data.lists.ul.map((list, lIndex) => (
-                  <ul key={lIndex} className="data-list">
-                    {list.map((item, iIndex) => (
-                      <li key={iIndex}>{item}</li>
+              <ContentCard title="Paragraphs" count={data.paragraphs?.length || 0}>
+                {data.paragraphs?.length > 0 ? (
+                  <div className="paragraphs-list">
+                    {data.paragraphs.map((para, i) => (
+                      <p key={i} className="paragraph-item">{para}</p>
                     ))}
-                  </ul>
-                ))}
-              </div>
-            )}
-            {data.lists?.ol?.length > 0 && (
-              <div className="lists-section">
-                <h4>Ordered Lists ({data.lists.ol.length})</h4>
-                {data.lists.ol.map((list, lIndex) => (
-                  <ol key={lIndex} className="data-list">
-                    {list.map((item, iIndex) => (
-                      <li key={iIndex}>{item}</li>
-                    ))}
-                  </ol>
-                ))}
-              </div>
-            )}
-            {(!data.lists?.ul?.length && !data.lists?.ol?.length) && (
-              <p className="no-data">No lists found</p>
-            )}
-          </div>
-        );
+                  </div>
+                ) : <p className="no-data">No paragraphs found</p>}
+              </ContentCard>
 
-      case 'fulltext':
-        return (
-          <div className="tab-content">
-            <h3>Full Text Content</h3>
-            <div className="full-text">
-              {data.all_text?.split('\n').map((line, index) => (
-                line.trim() && <p key={index}>{line}</p>
-              ))}
+              <ContentCard title="Links" count={data.links?.length || 0}>
+                {data.links?.length > 0 ? (
+                  <div className="links-list">
+                    {data.links.map((link, i) => (
+                      <div key={i} className="link-item">
+                        <a href={link.url} target="_blank" rel="noopener noreferrer">
+                          {link.text || link.url}
+                        </a>
+                        <span className="link-url">{link.url}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="no-data">No links found</p>}
+              </ContentCard>
+
+              <ContentCard title="Tables" count={data.tables?.length || 0}>
+                {data.tables?.length > 0 ? (
+                  <div className="tables-list">
+                    {data.tables.map((table, tIndex) => (
+                      <div key={tIndex} className="table-container">
+                        <h4>Table {tIndex + 1}</h4>
+                        <table className="data-table">
+                          <tbody>
+                            {table.map((row, rIndex) => (
+                              <tr key={rIndex}>
+                                {row.map((cell, cIndex) => (
+                                  <td key={cIndex}>{cell}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="no-data">No tables found</p>}
+              </ContentCard>
+
+              <ContentCard title="Lists" count={(data.lists?.ul?.length || 0) + (data.lists?.ol?.length || 0)}>
+                {(data.lists?.ul?.length > 0 || data.lists?.ol?.length > 0) ? (
+                  <>
+                    {data.lists?.ul?.length > 0 && (
+                      <div className="lists-section">
+                        <h4>Unordered Lists ({data.lists.ul.length})</h4>
+                        {data.lists.ul.map((list, lIndex) => (
+                          <ul key={lIndex} className="data-list">
+                            {list.map((item, iIndex) => <li key={iIndex}>{item}</li>)}
+                          </ul>
+                        ))}
+                      </div>
+                    )}
+                    {data.lists?.ol?.length > 0 && (
+                      <div className="lists-section">
+                        <h4>Ordered Lists ({data.lists.ol.length})</h4>
+                        {data.lists.ol.map((list, lIndex) => (
+                          <ol key={lIndex} className="data-list">
+                            {list.map((item, iIndex) => <li key={iIndex}>{item}</li>)}
+                          </ol>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : <p className="no-data">No lists found</p>}
+              </ContentCard>
+
+              <ContentCard title="Full Text">
+                <div className="full-text">
+                  {data.all_text?.split('\n').map((line, i) => (
+                    line.trim() && <p key={i}>{line}</p>
+                  ))}
+                </div>
+              </ContentCard>
             </div>
           </div>
         );
+      }
+
+      case 'tech_info': {
+        const tech = data.tech_stack;
+        const dom = data.domain_info || {};
+        const host = data.hosting_info || {};
+        const sslData = data.ssl_info || {};
+        const socialData = data.social_media || {};
+
+        const PillGroup = ({ label, items, pillClass }) => (
+          <div className="tech-group">
+            <span className="tech-group-label">{label}</span>
+            <div className="tech-pills">
+              {items && items.length > 0
+                ? items.map((item, i) => <span key={i} className={`tech-pill ${pillClass}`}>{item}</span>)
+                : <span className="tech-none">None detected</span>
+              }
+            </div>
+          </div>
+        );
+
+        const ExpiryBadge = ({ days }) => {
+          if (days === null || days === undefined) return null;
+          if (days <= 30) return <span className="badge-critical">⚠ {days} days left</span>;
+          if (days <= 90) return <span className="badge-warning">⚠ {days} days left</span>;
+          return <span className="badge-good">{days} days</span>;
+        };
+
+        const socialPlatforms = [
+          { key: 'facebook', label: 'Facebook', emoji: '📘' },
+          { key: 'instagram', label: 'Instagram', emoji: '📸' },
+          { key: 'linkedin', label: 'LinkedIn', emoji: '💼' },
+          { key: 'twitter', label: 'Twitter / X', emoji: '🐦' },
+          { key: 'youtube', label: 'YouTube', emoji: '▶️' },
+          { key: 'tiktok', label: 'TikTok', emoji: '🎵' },
+          { key: 'pinterest', label: 'Pinterest', emoji: '📌' },
+          { key: 'github', label: 'GitHub', emoji: '🐙' },
+        ];
+        const foundCount = socialPlatforms.filter(p => socialData[p.key]).length;
+
+        return (
+          <div className="tab-content">
+            {/* Tech Stack */}
+            <div className="tech-info-section">
+              <h3 className="tech-info-heading">Tech Stack</h3>
+              {tech && !tech.error ? (
+                <>
+                  {tech.platform && (
+                    <div className="tech-platform-banner">
+                      <span className="tech-pill platform" style={{ fontSize: '1rem', padding: '8px 20px' }}>
+                        {tech.platform}{tech.cms_version ? ` ${tech.cms_version}` : ''}
+                      </span>
+                    </div>
+                  )}
+                  {!tech.platform && <p className="no-data" style={{ color: '#a0a0a0' }}>Platform not detected</p>}
+                  <div className="tech-groups">
+                    <PillGroup label="Frameworks" items={tech.frameworks} pillClass="framework" />
+                    <PillGroup label="Analytics" items={tech.analytics} pillClass="analytics" />
+                    <PillGroup label="Payment Gateways" items={tech.payment} pillClass="payment" />
+                    <PillGroup label="Email / Marketing" items={tech.email_marketing} pillClass="email" />
+                    <PillGroup label="Security Tools" items={tech.security_tools} pillClass="security" />
+                    <PillGroup label="JS Libraries" items={tech.js_libraries} pillClass="default" />
+                    <PillGroup label="Fonts" items={tech.fonts} pillClass="default" />
+                  </div>
+                </>
+              ) : <p className="no-data">⚠️ {tech?.error || 'Tech stack data unavailable'}</p>}
+            </div>
+
+            <div className="tech-info-divider" />
+
+            {/* Domain & Hosting */}
+            <div className="tech-info-section">
+              <h3 className="tech-info-heading">Domain &amp; Hosting</h3>
+              {(dom.error || host.error) && (
+                <div className="info-error-note">⚠️ Some data may be unavailable: {dom.error || host.error}</div>
+              )}
+              <div className="info-grid">
+                <div className="info-card">
+                  <h4>Domain Registration</h4>
+                  <div className="info-row"><span className="info-label">Registered</span><span className="info-value">{dom.registration_date || 'N/A'}</span></div>
+                  <div className="info-row">
+                    <span className="info-label">Expires</span>
+                    <span className="info-value">
+                      {dom.expiry_date || 'N/A'}
+                      {dom.days_until_expiry !== undefined && <ExpiryBadge days={dom.days_until_expiry} />}
+                    </span>
+                  </div>
+                  <div className="info-row"><span className="info-label">Registrar</span><span className="info-value">{dom.registrar || 'N/A'}</span></div>
+                  <div className="info-row"><span className="info-label">Owner</span><span className="info-value">{dom.owner || 'Private / Redacted'}</span></div>
+                  <div className="info-row"><span className="info-label">Country</span><span className="info-value">{dom.country || 'N/A'}</span></div>
+                </div>
+                <div className="info-card">
+                  <h4>Server &amp; Hosting</h4>
+                  <div className="info-row"><span className="info-label">IP Address</span><span className="info-value">{host.ip_address || 'N/A'}</span></div>
+                  <div className="info-row"><span className="info-label">Provider</span><span className="info-value">{host.provider || 'N/A'}</span></div>
+                  <div className="info-row"><span className="info-label">Location</span><span className="info-value">{[host.city, host.country].filter(Boolean).join(', ') || 'N/A'}</span></div>
+                  <div className="info-row"><span className="info-label">Server Software</span><span className="info-value">{host.server_software || 'Not disclosed'}</span></div>
+                  <div className="info-row">
+                    <span className="info-label">CDN</span>
+                    <span className="info-value">
+                      {host.cdn ? <span className="badge-good">{host.cdn}</span> : 'None detected'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="tech-info-divider" />
+
+            {/* SSL */}
+            <div className="tech-info-section">
+              <h3 className="tech-info-heading">SSL Certificate</h3>
+              {sslData.error && !sslData.valid ? (
+                <div className="ssl-invalid">
+                  <div style={{ fontSize: '2rem' }}>🔓</div>
+                  <h3 style={{ color: '#ff4444', margin: '8px 0' }}>SSL INVALID / NOT HTTPS</h3>
+                  <p style={{ color: '#a0a0a0' }}>{sslData.error}</p>
+                </div>
+              ) : (
+                <div className={sslData.warning === 'expired' ? 'ssl-invalid' : 'ssl-valid'}>
+                  <div style={{ fontSize: '2rem' }}>{sslData.valid ? '🔒' : '🔓'}</div>
+                  <h3 style={{ color: sslData.valid ? '#00c851' : '#ff4444', margin: '8px 0' }}>
+                    {sslData.valid ? '✓ SSL VALID' : '✗ SSL INVALID'}
+                  </h3>
+                </div>
+              )}
+              {sslData.warning === 'critical' && (
+                <div className="expiry-banner critical">⚠️ Certificate expires in {sslData.days_remaining} days — CRITICAL</div>
+              )}
+              {sslData.warning === 'warning' && (
+                <div className="expiry-banner warning">⚠️ Certificate expires in {sslData.days_remaining} days — renew soon</div>
+              )}
+              <div className="info-card" style={{ marginTop: '12px' }}>
+                {[
+                  ['Issuer', sslData.issuer],
+                  ['Certificate Type', sslData.cert_type],
+                  ['Issued Date', sslData.issued_date],
+                  ['Expiry Date', sslData.expiry_date],
+                  ['Days Remaining', sslData.days_remaining != null ? `${sslData.days_remaining} days` : null],
+                ].map(([label, value], i) => value ? (
+                  <div key={i} className="info-row">
+                    <span className="info-label">{label}</span>
+                    <span className="info-value">{value}</span>
+                  </div>
+                ) : null)}
+              </div>
+            </div>
+
+            <div className="tech-info-divider" />
+
+            {/* Social */}
+            <div className="tech-info-section">
+              <h3 className="tech-info-heading">Social Media</h3>
+              <p style={{ color: '#a0a0a0', marginBottom: '16px' }}>{foundCount} / {socialPlatforms.length} platforms detected</p>
+              <div className="social-grid">
+                {socialPlatforms.map(({ key, label, emoji }) => {
+                  const url_found = socialData[key];
+                  return (
+                    <div key={key} className={`social-card ${url_found ? 'social-found' : 'social-not-found'}`}>
+                      <span style={{ fontSize: '1.5rem' }}>{emoji}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>{label}</div>
+                        {url_found
+                          ? <a href={url_found} target="_blank" rel="noopener noreferrer" className="badge-good" style={{ fontSize: '0.75rem', textDecoration: 'none' }}>✓ Found</a>
+                          : <span style={{ color: '#555', fontSize: '0.75rem' }}>✗ Not Found</span>
+                        }
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      case 'pages': {
+        const pagesData = data.pages || {};
+        const pagesList = pagesData.pages || [];
+        const sf = data.services_functionality || {};
+
+        const buildFullUrl = (page) => {
+          if (!page.url) return data.url;
+          if (page.url.startsWith('http')) return page.url;
+          return (data.url || '').replace(/\/$/, '') + (page.url.startsWith('/') ? page.url : '/' + page.url);
+        };
+
+        const handleCopyPages = () => {
+          const names = pagesList.map((page, i) => `${i + 1}. ${getPageName(page.url)}`).join('\n');
+          navigator.clipboard.writeText(names).then(() => {
+            toast.success('Page names copied to clipboard!');
+          });
+        };
+
+        return (
+          <div className="tab-content">
+
+            {/* ── Service & Functionality Analysis ── */}
+            {(sf.service_categories?.length > 0 || sf.functionality?.length > 0) && (
+              <div className="sf-section">
+                <h3 className="sf-heading">Website Functionality & Service Analysis</h3>
+
+                {sf.primary_service && (
+                  <div className="sf-primary">
+                    <span className="sf-primary-label">Primary Service Type</span>
+                    <span className="sf-primary-value">{sf.primary_service}</span>
+                  </div>
+                )}
+
+                {sf.service_categories?.length > 0 && (
+                  <div className="sf-block">
+                    <h4 className="sf-block-title">Service Categories</h4>
+                    <div className="sf-cards">
+                      {sf.service_categories.map((cat, i) => (
+                        <div key={i} className="sf-card service-card">
+                          <span className="sf-card-icon">{cat.icon}</span>
+                          <span className="sf-card-name">{cat.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {sf.functionality?.length > 0 && (
+                  <div className="sf-block">
+                    <h4 className="sf-block-title">Detected Functionality</h4>
+                    <div className="sf-cards">
+                      {sf.functionality.map((fn, i) => (
+                        <div key={i} className="sf-card fn-card">
+                          <span className="sf-card-icon">{fn.icon}</span>
+                          <span className="sf-card-name">{fn.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Pages List ── */}
+            <div className="pages-header">
+              <h3>Pages</h3>
+              {pagesList.length > 0 && (
+                <button className="copy-pages-btn" onClick={handleCopyPages}>
+                  Copy Names
+                </button>
+              )}
+            </div>
+            <div className="pages-summary">
+              <span className="summary-badge">{pagesData.total || 0} Pages Found</span>
+              <span className={`summary-badge ${pagesData.sitemap_found ? 'badge-good' : 'badge-critical'}`}>
+                Sitemap: {pagesData.sitemap_found ? '✓ Found' : '✗ Not Found'}
+              </span>
+            </div>
+            {pagesData.error && <p className="no-data">⚠️ {pagesData.error}</p>}
+            {pagesList.length > 0 ? (
+              <div className="pages-name-list">
+                {pagesList.map((page, i) => (
+                  <a
+                    key={i}
+                    href={buildFullUrl(page)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="page-name-item"
+                  >
+                    <span className="page-serial">{i + 1}</span>
+                    <span className="page-name-icon">📄</span>
+                    <span className="page-name-text">{getPageName(page.url)}</span>
+                    <span className="page-name-arrow">→</span>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <p className="no-data">No pages discovered</p>
+            )}
+          </div>
+        );
+      }
+
+      case 'business': {
+        const biz = data.business_profile || {};
+        const opps = data.sales_opportunities || [];
+        const contact = data.contact_info || {};
+        const niches = {
+          'E-commerce': '#00c851', 'SaaS': '#00d4ff', 'Agency / Portfolio': '#7b2cbf',
+          'Blog / Media': '#ff8800', 'Restaurant / Food': '#ff6b6b', 'Healthcare': '#17a2b8',
+          'Education': '#ffc107', 'Real Estate': '#6f42c1', 'Legal': '#6c757d',
+          'Finance': '#28a745', 'Non-profit': '#e83e8c', 'General': '#495057'
+        };
+        const nicheColor = niches[biz.niche] || '#495057';
+        const priorityGroups = { High: [], Medium: [], Low: [] };
+        opps.forEach(o => { if (priorityGroups[o.priority]) priorityGroups[o.priority].push(o); });
+
+        return (
+          <div className="tab-content">
+            <h3>Business Profile</h3>
+
+            {biz.niche && (
+              <div style={{ marginBottom: '20px' }}>
+                <span style={{
+                  background: nicheColor + '33', color: nicheColor,
+                  border: `1px solid ${nicheColor}66`, padding: '6px 18px',
+                  borderRadius: '20px', fontSize: '1rem', fontWeight: '600'
+                }}>
+                  {biz.niche}
+                </span>
+              </div>
+            )}
+
+            <div className="info-card">
+              {[
+                ['Language', biz.language?.toUpperCase()],
+                ['Target Region', biz.target_region],
+                ['Last Modified', biz.last_modified],
+              ].map(([label, value], i) => value ? (
+                <div key={i} className="info-row">
+                  <span className="info-label">{label}</span>
+                  <span className="info-value">{value}</span>
+                </div>
+              ) : null)}
+            </div>
+
+            {(contact.emails?.length > 0 || contact.phones?.length > 0) && (
+              <div style={{ marginTop: '20px' }}>
+                <h4 style={{ marginBottom: '10px', color: '#e0e0e0' }}>Contact Information</h4>
+                <div className="info-card">
+                  {contact.emails?.map((email, i) => (
+                    <div key={`e${i}`} className="info-row">
+                      <span className="info-label">📧 Email</span>
+                      <span className="info-value">
+                        <a href={`mailto:${email}`} style={{ color: '#00d4ff', textDecoration: 'none' }}>{email}</a>
+                      </span>
+                    </div>
+                  ))}
+                  {contact.phones?.map((phone, i) => (
+                    <div key={`p${i}`} className="info-row">
+                      <span className="info-label">📞 Phone</span>
+                      <span className="info-value">{phone}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="similaweb-callout">
+              <span>📊</span>
+              <span>For traffic &amp; ranking data, check <a href="https://www.similarweb.com" target="_blank" rel="noopener noreferrer" style={{ color: '#00d4ff' }}>SimilarWeb.com</a></span>
+            </div>
+
+            {data.pagespeed && !data.pagespeed.error && (
+              <div style={{ marginTop: '16px' }}>
+                <h4 style={{ marginBottom: '10px' }}>PageSpeed Scores</h4>
+                <div className="info-card">
+                  {[
+                    ['Mobile Performance', data.pagespeed.mobile_score !== null ? `${data.pagespeed.mobile_score}/100` : null],
+                    ['Desktop Performance', data.pagespeed.desktop_score !== null ? `${data.pagespeed.desktop_score}/100` : null],
+                    ['LCP', data.pagespeed.lcp],
+                    ['CLS', data.pagespeed.cls],
+                    ['TBT', data.pagespeed.fid],
+                    ['Accessibility', data.pagespeed.accessibility_score !== null ? `${data.pagespeed.accessibility_score}/100` : null],
+                    ['Best Practices', data.pagespeed.best_practices_score !== null ? `${data.pagespeed.best_practices_score}/100` : null],
+                  ].filter(([, v]) => v).map(([label, value], i) => (
+                    <div key={i} className="info-row">
+                      <span className="info-label">{label}</span>
+                      <span className="info-value">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {data.pagespeed?.error && (
+              <div className="info-error-note" style={{ marginTop: '12px' }}>📊 {data.pagespeed.error}</div>
+            )}
+
+            {/* Sales Signals */}
+            <div style={{ marginTop: '28px' }}>
+              <div className="sales-header">
+                <h3>⚡ Sales Signals</h3>
+                <span className="sales-count-badge">{opps.length} opportunities detected</span>
+              </div>
+              {opps.length === 0 ? (
+                <div className="no-vulnerabilities">
+                  <div className="success-icon">✓</div>
+                  <p>No sales opportunities detected</p>
+                  <span>This site appears well-optimised</span>
+                </div>
+              ) : (
+                <div>
+                  {Object.entries(priorityGroups).map(([level, items]) => {
+                    if (!items.length) return null;
+                    const colors = { High: '#ff4444', Medium: '#ffcc00', Low: '#00d4ff' };
+                    return (
+                      <div key={level} className="sales-priority-group">
+                        <h4 style={{ color: colors[level], borderBottom: `2px solid ${colors[level]}33`, paddingBottom: '6px', marginBottom: '12px' }}>
+                          {level} Priority ({items.length})
+                        </h4>
+                        {items.map((opp, i) => (
+                          <div key={i} className="sales-opp-card">
+                            <div className="sales-opp-header">
+                              <span className="sales-opp-icon">{opp.icon}</span>
+                              <span className="sales-opp-title">{opp.title}</span>
+                              <span className={`sales-priority-badge priority-${level.toLowerCase()}`}>{level}</span>
+                            </div>
+                            <p className="sales-opp-desc">{opp.description}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
 
       default:
         return null;
@@ -525,7 +995,7 @@ function App() {
       <ToastContainer position="top-right" autoClose={3000} />
 
       <header className="app-header">
-        <h1>VulnScan</h1>
+        <h1>Scana</h1>
         <p>Scan websites for security vulnerabilities and assess potential risks</p>
       </header>
 
@@ -557,15 +1027,44 @@ function App() {
               </button>
             </div>
           </form>
+          {loading && (
+            <div className="scan-progress">
+              <div className="progress-bar-outer">
+                <div className="progress-bar-fill" style={{ width: `${scanProgress}%` }} />
+              </div>
+              <p className="progress-step-text">{scanStep}</p>
+            </div>
+          )}
         </section>
 
         {data && (
           <section className="results-section">
             <div className="results-header">
-              <h2>Scraped Data</h2>
+              <h2>Scan Data</h2>
+              <div className="summary-stats">
+                <div className="summary-stat">
+                  <span className="summary-stat-value">{data.pages?.total ?? '—'}</span>
+                  <span className="summary-stat-label">Pages Found</span>
+                </div>
+                <div className="summary-stat warn">
+                  <span className="summary-stat-value">{data.links_analysis?.suspicious_count ?? 0}</span>
+                  <span className="summary-stat-label">Suspicious Links</span>
+                </div>
+                <div className="summary-stat">
+                  <span className="summary-stat-value">{data.seo?.score ?? '—'}</span>
+                  <span className="summary-stat-label">SEO Score</span>
+                </div>
+                <div className="summary-stat warn">
+                  <span className="summary-stat-value">{data.vulnerabilities?.summary?.total ?? 0}</span>
+                  <span className="summary-stat-label">Security Issues</span>
+                </div>
+                <div className="summary-stat accent">
+                  <span className="summary-stat-value">{data.sales_opportunities?.length ?? 0}</span>
+                  <span className="summary-stat-label">Sales Signals</span>
+                </div>
+              </div>
               <div className="export-buttons">
                 <button onClick={handleExportCSV} className="export-btn csv-btn">Export CSV</button>
-                <button onClick={handleExportDOC} className="export-btn doc-btn">Export DOC</button>
                 <button
                   onClick={() => setShowExportOptions(prev => !prev)}
                   className={`export-btn options-btn ${showExportOptions ? 'active' : ''}`}
@@ -587,13 +1086,11 @@ function App() {
                     { key: 'overview', label: 'Overview' },
                     { key: 'vulnerabilities', label: 'Vulnerabilities' },
                     { key: 'seo', label: 'SEO' },
-                    { key: 'headings', label: 'Headings' },
-                    { key: 'paragraphs', label: 'Paragraphs' },
-                    { key: 'links', label: 'Links' },
+                    { key: 'content', label: 'Content (Headings, Paragraphs, Links, Tables, Lists, Text)' },
                     { key: 'images', label: 'Images' },
-                    { key: 'tables', label: 'Tables' },
-                    { key: 'lists', label: 'Lists' },
-                    { key: 'fulltext', label: 'Full Text' },
+                    { key: 'tech_info', label: 'Tech Info (Stack, Domain, SSL, Social)' },
+                    { key: 'pages', label: 'Pages' },
+                    { key: 'business', label: 'Business Profile & Sales Signals' },
                   ].map(({ key, label }) => (
                     <label key={key} className="export-checkbox-label">
                       <input
@@ -613,16 +1110,15 @@ function App() {
                 { id: 'overview', label: 'Overview' },
                 { id: 'vulnerabilities', label: 'Vulnerabilities' },
                 { id: 'seo', label: 'SEO' },
-                { id: 'headings', label: 'Headings' },
-                { id: 'paragraphs', label: 'Paragraphs' },
-                { id: 'links', label: 'Links' },
+                { id: 'content', label: 'Content' },
+                { id: 'tech_info', label: 'Tech Info' },
+                { id: 'pages', label: 'Pages & Functionality' },
                 { id: 'images', label: 'Images' },
-                { id: 'tables', label: 'Tables' },
-                { id: 'lists', label: 'Lists' },
-                { id: 'fulltext', label: 'Full Text' },
+                { id: 'business', label: 'Business Profile' },
               ].map((tab) => (
                 <button
                   key={tab.id}
+                  data-tab={tab.id}
                   className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
                   onClick={() => setActiveTab(tab.id)}
                 >
@@ -639,7 +1135,7 @@ function App() {
       </main>
 
       <footer className="app-footer">
-        <p>VulnScan &copy; 2024 - Website Security Vulnerability Scanner</p>
+        <p>Scana &copy; 2024 - Website Security Vulnerability Scanner</p>
       </footer>
     </div>
   );
